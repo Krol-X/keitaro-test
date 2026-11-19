@@ -53,20 +53,7 @@
             <span class="text-xs text-gray-500">Выбрано: {{ form.excludedCountries.length }} из {{ references.countries.length }}</span>
           </div>
           <p class="mt-1 text-xs text-gray-500">Оставьте список пустым, если дополнительный поток с редиректом не нужен. Поиск работает по названию и коду ISO.</p>
-          <input v-model="countrySearch" type="search" class="mt-2 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="Найти страну или код, например BY" aria-label="Поиск страны" />
-          <div class="mt-2 flex gap-3 text-sm">
-            <button type="button" class="text-blue-700 hover:underline" @click="selectAllCountries">Выбрать все</button>
-            <button type="button" class="text-blue-700 hover:underline" @click="clearCountries">Снять выбор</button>
-          </div>
-          <div class="mt-2 max-h-40 overflow-y-auto rounded-md border border-gray-200 p-3">
-            <div class="grid gap-x-4 gap-y-2 sm:grid-cols-2">
-              <label v-for="country in filteredCountries" :key="country.code" class="inline-flex items-center gap-2 text-sm text-gray-700">
-                <input v-model="form.excludedCountries" type="checkbox" :value="country.code" class="rounded border-gray-300" />
-                {{ displayCountryName(country) }} ({{ country.code }})
-              </label>
-            </div>
-            <p v-if="filteredCountries.length === 0" class="text-sm text-gray-500">Страны не найдены.</p>
-          </div>
+          <CountrySelector v-model="form.excludedCountries" :countries="references.countries" class="mt-2" />
         </fieldset>
 
         <p v-if="error" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
@@ -82,8 +69,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { useCampaignStore } from '../stores/campaigns'
+import CountrySelector from './CountrySelector.vue'
 
 interface Reference { id: number; name: string }
 interface Country { code: string; name: string }
@@ -94,7 +82,6 @@ const store = useCampaignStore()
 const loadingOptions = ref(false)
 const submitting = ref(false)
 const error = ref('')
-const countrySearch = ref('')
 const offers = ref<{ offer_id: number; name: string }[]>([])
 const references = ref<{ domains: Reference[]; groups: Reference[]; traffic_sources: Reference[]; countries: Country[]; defaults: Record<string, number | null> }>({
   domains: [], groups: [], traffic_sources: [], countries: [], defaults: {}
@@ -109,25 +96,6 @@ const form = reactive({
 })
 
 const close = () => emit('update:visible', false)
-const countryNames = new Intl.DisplayNames(['ru'], { type: 'region' })
-const displayCountryName = (country: Country) => countryNames.of(country.code) || country.name
-const filteredCountries = computed(() => {
-  const query = countrySearch.value.trim().toLocaleLowerCase()
-  return [...references.value.countries]
-    .filter(country =>
-      !query ||
-      displayCountryName(country).toLocaleLowerCase().includes(query) ||
-      country.name.toLocaleLowerCase().includes(query) ||
-      country.code.toLowerCase().includes(query)
-    )
-    .sort((left, right) => displayCountryName(left).localeCompare(displayCountryName(right), 'ru'))
-})
-const selectAllCountries = () => {
-  form.excludedCountries = references.value.countries.map(country => country.code)
-}
-const clearCountries = () => {
-  form.excludedCountries = []
-}
 
 watch(() => props.visible, async (isVisible) => {
   if (!isVisible) return
