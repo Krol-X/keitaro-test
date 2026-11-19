@@ -112,6 +112,49 @@ def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_s
     finally:
         db.close()
 
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+def test_add_offer_to_existing_stream(mock_get_stream, mock_update_stream, mock_list_offers):
+    mock_get_stream.return_value = {
+        "id": 12, "campaign_id": 50,
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
+    }
+    mock_list_offers.return_value = [{"id": 9, "name": "New offer"}]
+    mock_update_stream.return_value = {"offers": []}
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [
+            {"offer_id": 8, "share": 50, "state": "active"},
+            {"offer_id": 9, "share": 50, "state": "active"},
+        ]
+    })
+
+    assert response.status_code == 200
+    mock_list_offers.assert_awaited_once()
+    sent_ids = {offer["offer_id"] for offer in mock_update_stream.call_args.args[1]["offers"]}
+    assert sent_ids == {8, 9}
+
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+def test_reject_adding_unknown_offer(mock_get_stream, mock_update_stream, mock_list_offers):
+    mock_get_stream.return_value = {
+        "id": 12, "campaign_id": 50,
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
+    }
+    mock_list_offers.return_value = [{"id": 9, "name": "New offer"}]
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [
+            {"offer_id": 8, "share": 50, "state": "active"},
+            {"offer_id": 99, "share": 50, "state": "active"},
+        ]
+    })
+
+    assert response.status_code == 422
+    mock_update_stream.assert_not_awaited()
+
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 def test_locked_offer_percentage_cannot_change_without_unlock(mock_update_stream, mock_get_stream):
