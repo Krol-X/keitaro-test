@@ -12,6 +12,22 @@
       <Button label="Назад" @click="$router.back()" severity="secondary" outlined />
     </div>
 
+    <section class="detail-edit-panel">
+      <div class="detail-section-heading">
+        <div><p class="eyebrow">Редактирование</p><h3>Основные настройки</h3></div>
+        <button class="button button-primary" type="button" :disabled="savingCampaign || !campaignChanged" @click="saveCampaign">
+          {{ savingCampaign ? 'Сохранение…' : 'Сохранить настройки' }}
+        </button>
+      </div>
+      <div class="campaign-edit-grid">
+        <label>Название кампании<input v-model.trim="draft.name" maxlength="120" /></label>
+        <label>Состояние<select v-model="draft.state"><option value="active">Активна</option><option value="disabled">Выключена</option></select></label>
+        <label>Домен<select v-model="draft.domainId"><option value="">Не задан</option><option v-for="item in references.domains" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
+        <label>Группа кампаний<select v-model="draft.groupId"><option value="">Не задана</option><option v-for="item in references.groups" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
+        <label>Источник трафика<select v-model="draft.trafficSourceId"><option value="">Не задан</option><option v-for="item in references.traffic_sources" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
+      </div>
+    </section>
+
     <!-- Настройки (единый стиль карточек) -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
       <div v-for="item in [
@@ -106,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useCampaignStore } from '../stores/campaigns'
 import DataTable from 'primevue/datatable'
@@ -121,6 +137,16 @@ import Tag from 'primevue/tag'
 const route = useRoute()
 const store = useCampaignStore()
 const campaign = ref<any>(null)
+const references = ref<any>({ domains: [], groups: [], traffic_sources: [] })
+const draft = reactive({ name: '', state: 'active', domainId: '', groupId: '', trafficSourceId: '' })
+const campaignChanged = computed(() => Boolean(campaign.value && (
+  draft.name !== campaign.value.name ||
+  draft.state !== campaign.value.state ||
+  draft.domainId !== String(campaign.value.domain_id ?? '') ||
+  draft.groupId !== String(campaign.value.group_id ?? '') ||
+  draft.trafficSourceId !== String(campaign.value.traffic_source_id ?? '')
+)))
+const savingCampaign = ref(false)
 const hasChanges = ref(false)
 const saving = ref(false)
 const saveError = ref('')
@@ -128,8 +154,34 @@ const saveError = ref('')
 const fetchDetail = async () => {
   try {
     campaign.value = await store.getCampaignDetail(Number(route.params.id))
+    draft.name = campaign.value.name || ''
+    draft.state = campaign.value.state || 'disabled'
+    draft.domainId = String(campaign.value.domain_id ?? '')
+    draft.groupId = String(campaign.value.group_id ?? '')
+    draft.trafficSourceId = String(campaign.value.traffic_source_id ?? '')
   } catch (error: any) {
     saveError.value = error?.response?.data?.detail || 'Не удалось загрузить кампанию.'
+  }
+}
+
+const saveCampaign = async () => {
+  if (!campaign.value || !campaignChanged.value || savingCampaign.value) return
+  savingCampaign.value = true
+  saveError.value = ''
+  try {
+    await store.updateCampaign(campaign.value.campaign_id, {
+      name: draft.name,
+      state: draft.state,
+      domain_id: draft.domainId ? Number(draft.domainId) : null,
+      group_id: draft.groupId ? Number(draft.groupId) : null,
+      traffic_source_id: draft.trafficSourceId ? Number(draft.trafficSourceId) : null
+    })
+    await fetchDetail()
+    await store.fetchCampaigns()
+  } catch (error: any) {
+    saveError.value = error?.response?.data?.detail || 'Не удалось сохранить настройки кампании.'
+  } finally {
+    savingCampaign.value = false
   }
 }
 
@@ -184,5 +236,8 @@ const saveAll = async () => {
   }
 }
 
-onMounted(fetchDetail)
+onMounted(() => {
+  fetchDetail()
+  store.fetchReferences().then(data => { references.value = data }).catch(() => {})
+})
 </script>

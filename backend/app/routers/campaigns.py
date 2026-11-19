@@ -4,6 +4,8 @@ import os
 import re
 import unicodedata
 from datetime import datetime
+
+import pycountry
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, Query, status
@@ -59,10 +61,31 @@ class CreateCampaignRequest(BaseModel):
 
     @validator("excluded_countries")
     def countries_valid(cls, v):
-        if not v:
-            raise ValueError("Excluded countries list cannot be empty")
         normalized = sorted(set(c.upper() for c in v))
+        invalid = [code for code in normalized if pycountry.countries.get(alpha_2=code) is None]
+        if invalid:
+            raise ValueError(f"Unknown country codes: {', '.join(invalid)}")
         return normalized
+
+class UpdateCampaignRequest(BaseModel):
+    name: Optional[str] = None
+    state: Optional[str] = None
+    domain_id: Optional[int] = None
+    group_id: Optional[int] = None
+    traffic_source_id: Optional[int] = None
+
+    @validator("name")
+    def update_name_not_empty(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("Name cannot be empty")
+        return value.strip() if value is not None else value
+
+    @validator("state")
+    def campaign_state_valid(cls, value):
+        if value is not None and value not in {"active", "disabled"}:
+            raise ValueError("State must be active or disabled")
+        return value
+
 
 class StreamOfferUpdate(BaseModel):
     offer_id: int
@@ -182,10 +205,8 @@ async def get_references():
     traffic_sources = await keitaro.list_traffic_sources()
 
     countries = [
-        {"code": "PL", "name": "Poland"},
-        {"code": "LT", "name": "Lithuania"},
-        {"code": "RU", "name": "Russia"},
-        {"code": "NL", "name": "Netherlands"}
+        {"code": country.alpha_2, "name": country.name}
+        for country in sorted(pycountry.countries, key=lambda item: item.name.casefold())
     ]
 
     return ReferenceResponse(
@@ -285,34 +306,35 @@ async def create_campaign(
         op.stage = "streams_creation"
         db.commit()
 
-        stream_filters = response_items(await keitaro.list_stream_filters())
-        country_filter = next(
-            (item for item in stream_filters if str(item.get("value", "")).casefold() in {"country", "countries"}),
-            None,
-        )
-        if country_filter is None:
-            raise HTTPException(status_code=502, detail="Keitaro does not expose a country stream filter")
+        if request.excluded_countries:
+            stream_filters = response_items(await keitaro.list_stream_filters())
+            country_filter = next(
+                (item for item in stream_filters if str(item.get("value", "")).casefold() in {"country", "countries"}),
+                None,
+            )
+            if country_filter is None:
+                raise HTTPException(status_code=502, detail="Keitaro does not expose a country stream filter")
 
-        await keitaro.create_stream({
-            "campaign_id": campaign_id,
-            "name": "Forced Redirect (Google)",
-            "position": 1,
-            "type": "forced",
-            "schema": "redirect",
-            "action_type": "http",
-            "action_payload": "https://www.google.com/",
-            "collect_clicks": True,
-            "filters": [{
-                "name": country_filter["value"],
-                "mode": "accept",
-                "payload": request.excluded_countries,
-            }],
-        })
+            await keitaro.create_stream({
+                "campaign_id": campaign_id,
+                "name": "Forced Redirect (Google)",
+                "position": 1,
+                "type": "forced",
+                "schema": "redirect",
+                "action_type": "http",
+                "action_payload": "https://www.google.com/",
+                "collect_clicks": True,
+                "filters": [{
+                    "name": country_filter["value"],
+                    "mode": "accept",
+                    "payload": request.excluded_countries,
+                }],
+            })
 
         await keitaro.create_stream({
             "campaign_id": campaign_id,
             "name": "Default Stream",
-            "position": 2,
+            "position": 2 if request.excluded_countries else 1,
             "type": "default",
             "schema": "landings",
             "action_type": "http",
@@ -372,6 +394,48 @@ async def get_campaign_detail(campaign_id: int):
         "traffic_source_name": related_name(campaign.get("traffic_source")),
         "streams": normalize_streams(streams)
     }
+
+@router.put("/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: int, request: UpdateCampaignRequest):
+    changes = request.dict(exclude_unset=True)
+    requested_state = changes.pop("state", None)
+    if not changes and requested_state is None:
+        raise HTTPException(status_code=400, detail="Provide at least one campaign field to update")
+    try:
+        if changes:
+            await keitaro.update_campaign(campaign_id, changes)
+        if requested_state == "active":
+            await keitaro.enable_campaign(campaign_id)
+        elif requested_state == "disabled":
+            await keitaro.disable_campaign(campaign_id)
+        updated = await keitaro.get_campaign(campaign_id)
+        return {
+            "campaign_id": updated["id"],
+            "name": updated["name"],
+            "state": updated["state"],
+            "campaign_url": updated.get("url"),
+            "domain_id": updated.get("domain_id"),
+            "domain_name": related_name(updated.get("domain")),
+            "group_id": updated.get("group_id"),
+            "group_name": related_name(updated.get("group")),
+            "traffic_source_id": updated.get("traffic_source_id"),
+            "traffic_source_name": related_name(updated.get("traffic_source")),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.delete("/campaigns/{campaign_id}", status_code=204)
+async def delete_campaign(campaign_id: int):
+    try:
+        await keitaro.delete_campaign(campaign_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 
 @router.put("/campaigns/{campaign_id}/streams/{stream_id}/offers")
 async def update_stream_offers(

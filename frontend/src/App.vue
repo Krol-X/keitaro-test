@@ -1,12 +1,16 @@
 <template>
-  <div class="min-h-screen bg-gray-50 flex flex-col">
-    <header class="bg-white shadow-sm p-4 flex justify-between items-center">
-      <h1 class="text-xl font-bold text-gray-800">Keitaro Campaign Panel</h1>
-      <div class="flex gap-2">
-        <Button label="Создать кампанию" @click="openCreateDialog" severity="success" />
+  <div class="app-frame">
+    <header class="app-header">
+      <router-link to="/" class="brand-lockup" aria-label="Keitaro Campaign Panel — главная">
+        <span class="brand-mark"><i class="pi pi-chart-line" aria-hidden="true"></i></span>
+        <span><strong>Keitaro</strong><small>Campaign panel</small></span>
+      </router-link>
+      <div class="header-actions">
+        <span class="workspace-label"><span class="workspace-dot"></span>Рабочее пространство</span>
+        <Button label="Создать кампанию" icon="pi pi-plus" @click="openCreateDialog" severity="success" />
       </div>
     </header>
-    <main class="flex-1 p-6">
+    <main class="app-content">
       <router-view />
     </main>
     <CampaignCreateDialog v-model:visible="showCreateDialog" />
@@ -14,12 +18,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import CampaignCreateDialog from './components/CampaignCreateDialog.vue'
 
 const showCreateDialog = ref(false)
-const openCreateDialog = () => {
-  showCreateDialog.value = true
-}
+const openCreateDialog = () => { showCreateDialog.value = true }
+onMounted(() => window.addEventListener('campaign:create', openCreateDialog))
+onBeforeUnmount(() => window.removeEventListener('campaign:create', openCreateDialog))
 </script>

@@ -21,6 +21,8 @@ class KeitaroClient:
                 if response.status_code == 404:
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Keitaro resource not found")
                 response.raise_for_status()
+                if response.status_code == 204 or not response.content:
+                    return None
                 return response.json()
             except httpx.TimeoutException:
                 raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Keitaro timeout")
@@ -33,11 +35,20 @@ class KeitaroClient:
     async def create_campaign(self, data: dict):
         return await self._request("POST", "/campaigns", json=data)
 
+    async def update_campaign(self, campaign_id: int, data: dict):
+        return await self._request("PUT", f"/campaigns/{campaign_id}", json=data)
+
+    async def delete_campaign(self, campaign_id: int):
+        return await self._request("DELETE", f"/campaigns/{campaign_id}")
+
     async def get_campaign(self, campaign_id: int):
         return await self._request("GET", f"/campaigns/{campaign_id}")
 
     async def enable_campaign(self, campaign_id: int):
         return await self._request("POST", f"/campaigns/{campaign_id}/enable")
+
+    async def disable_campaign(self, campaign_id: int):
+        return await self._request("POST", f"/campaigns/{campaign_id}/disable")
 
     async def list_streams(self, campaign_id: int):
         return await self._request("GET", f"/campaigns/{campaign_id}/streams")
