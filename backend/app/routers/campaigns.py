@@ -480,6 +480,14 @@ async def update_stream_offers(
             OfferShareLock.share_locked.is_(True),
         ).all()
         stream_offers = {int(offer.get("offer_id")): offer for offer in stream.get("offers", [])}
+        new_offer_ids = set(submitted) - set(stream_offers)
+        if new_offer_ids:
+            available_offers = response_items(await keitaro.list_offers())
+            valid_offer_ids = {int(offer["id"]) for offer in available_offers if offer.get("id") is not None}
+            unknown_ids = sorted(new_offer_ids - valid_offer_ids)
+            if unknown_ids:
+                raise HTTPException(status_code=422, detail=f"Offer not found: {', '.join(map(str, unknown_ids))}")
+
         for lock in persisted_locks:
             submitted_offer = submitted.get(lock.offer_id)
             current_offer = stream_offers.get(lock.offer_id)

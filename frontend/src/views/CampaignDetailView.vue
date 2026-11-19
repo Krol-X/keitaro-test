@@ -67,9 +67,32 @@
             </div>
 
             <!-- Офферы (для default потока - Редактор) -->
-            <div v-if="stream.type === 'default' && stream.offers?.length" class="mt-4">
-              <div class="flex justify-between items-center mb-3">
+            <div v-if="stream.type === 'default'" class="mt-4">
+              <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                 <h4 class="font-semibold text-gray-800">Офферы потока</h4>
+              </div>
+              <div class="mb-4 rounded-lg border border-gray-200 bg-white p-3">
+                <form class="flex flex-wrap gap-2" @submit.prevent="searchOffers">
+                  <input
+                    v-model.trim="offerSearchQuery"
+                    type="search"
+                    class="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm"
+                    placeholder="Найти оффер по названию или ID"
+                    aria-label="Поиск офферов для добавления"
+                  />
+                  <button class="button button-secondary button-small" type="submit" :disabled="searchingOffers || !offerSearchQuery">
+                    {{ searchingOffers ? 'Поиск…' : 'Найти' }}
+                  </button>
+                  <select v-model="selectedOfferId" class="min-w-[180px] flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm" :disabled="addableOffers(stream).length === 0">
+                    <option value="">{{ addableOffers(stream).length ? 'Выберите оффер' : (store.offers.length ? 'Все найденные уже добавлены' : 'Сначала найдите офферы') }}</option>
+                    <option v-for="item in addableOffers(stream)" :key="item.offer_id" :value="String(item.offer_id)">{{ item.name }} (ID: {{ item.offer_id }})</option>
+                  </select>
+                  <button class="button button-primary button-small" type="button" :disabled="!selectedOfferId" @click="addOffer(stream.stream_id || stream.id)">
+                    <i class="pi pi-plus" aria-hidden="true"></i>Добавить
+                  </button>
+                </form>
+                <p class="mb-0 mt-2 text-xs text-gray-500">Новый оффер добавится с долей 0%, чтобы не менять текущее распределение. Настройте проценты перед сохранением.</p>
+                <p v-if="offerSearchError" class="mb-0 mt-2 text-xs text-red-700">{{ offerSearchError }}</p>
               </div>
               
               <!-- Офферы остаются в списке; отключённые помечаются статусом -->
@@ -180,6 +203,10 @@ const savingCampaign = ref(false)
 const hasChanges = ref(false)
 const saving = ref(false)
 const saveError = ref('')
+const offerSearchQuery = ref('')
+const offerSearchError = ref('')
+const searchingOffers = ref(false)
+const selectedOfferId = ref('')
 
 const fetchDetail = async () => {
   try {
@@ -219,6 +246,40 @@ const describeFilters = (stream: any) => {
   const filters = stream.filters || []
   if (!filters.length) return 'Без дополнительных условий'
   return filters.map((filter: any) => `${filter.name}: ${(filter.payload || []).join(', ')}`).join('; ')
+}
+
+const searchOffers = async () => {
+  if (!offerSearchQuery.value) return
+  searchingOffers.value = true
+  offerSearchError.value = ''
+  selectedOfferId.value = ''
+  try {
+    await store.fetchOffers(offerSearchQuery.value)
+    if (store.offers.length === 0) offerSearchError.value = 'Офферы не найдены.'
+  } catch (error: any) {
+    offerSearchError.value = error?.response?.data?.detail || 'Не удалось загрузить офферы.'
+  } finally {
+    searchingOffers.value = false
+  }
+}
+
+const addableOffers = (stream: any) => store.offers.filter((candidate: any) =>
+  !(stream.offers || []).some((offer: any) => Number(offer.offer_id) === Number(candidate.offer_id))
+)
+
+const addOffer = (streamId: number) => {
+  const stream = campaign.value?.streams?.find((item: any) => Number(item.stream_id || item.id) === Number(streamId))
+  const offer = store.offers.find((item: any) => String(item.offer_id) === selectedOfferId.value)
+  if (!stream || !offer || (stream.offers || []).some((item: any) => Number(item.offer_id) === Number(offer.offer_id))) return
+  stream.offers.push({
+    offer_id: Number(offer.offer_id),
+    name: offer.name,
+    share: 0,
+    state: 'active',
+    share_locked: false
+  })
+  selectedOfferId.value = ''
+  hasChanges.value = true
 }
 
 const findOffer = (streamId: number, offerId: number) => {
