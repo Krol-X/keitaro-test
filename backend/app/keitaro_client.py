@@ -27,11 +27,8 @@ class KeitaroClient:
             except httpx.HTTPStatusError as e:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Keitaro error: {e.response.text}")
 
-    async def list_campaigns(self, query: Optional[str] = None, limit: int = 25, offset: int = 0):
-        params = {"limit": limit, "offset": offset}
-        if query:
-            params["query"] = query
-        return await self._request("GET", "/campaigns", params=params)
+    async def list_campaigns(self, limit: int = 25, offset: int = 0):
+        return await self._request("GET", "/campaigns", params={"limit": limit, "offset": offset})
 
     async def create_campaign(self, data: dict):
         return await self._request("POST", "/campaigns", json=data)
@@ -63,8 +60,8 @@ class KeitaroClient:
     async def list_traffic_sources(self):
         return await self._request("GET", "/traffic_sources")
 
-    async def list_offers(self, query: Optional[str] = None):
-        params = {}
-        if query:
-            params["query"] = query
-        return await self._request("GET", "/offers", params=params)
+    async def list_offers(self):
+        return await self._request("GET", "/offers")
+
+    async def list_stream_filters(self):
+        return await self._request("GET", "/stream_filters")

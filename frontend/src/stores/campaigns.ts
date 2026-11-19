@@ -9,15 +9,17 @@ export const useCampaignStore = defineStore('campaigns', {
     loading: false,
     error: null,
     references: null as any,
+    offers: [] as any[],
     operations: {} as Record<string, any>
   }),
   actions: {
     async fetchCampaigns(query?: string, limit = 25, offset = 0) {
       this.loading = true
+      this.error = null
       try {
         const res = await axios.get(`${API_BASE}/campaigns`, { params: { query, limit, offset } })
         this.campaigns = res.data.items
-      } catch (e) {
+      } catch (e: any) {
         this.error = e.response?.data?.detail || 'Ошибка загрузки'
       } finally {
         this.loading = false
@@ -26,6 +28,12 @@ export const useCampaignStore = defineStore('campaigns', {
     async fetchReferences() {
       const res = await axios.get(`${API_BASE}/references`)
       this.references = res.data
+      return res.data
+    },
+    async fetchOffers(query?: string) {
+      const res = await axios.get(`${API_BASE}/offers`, { params: { query } })
+      this.offers = res.data.items
+      return res.data.items
     },
     async createCampaign(data: any, idempotencyKey: string) {
       const res = await axios.post(`${API_BASE}/campaigns`, data, {
