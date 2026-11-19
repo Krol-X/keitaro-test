@@ -1,0 +1,7 @@
+pytest
+httpx
+sqlalchemy
+fastapi
+uvicorn
+python-dotenv
+pydantic
