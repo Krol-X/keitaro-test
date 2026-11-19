@@ -5,3 +5,4 @@ fastapi
 uvicorn
 python-dotenv
 pydantic
+pycountry>=24.6.1,<27

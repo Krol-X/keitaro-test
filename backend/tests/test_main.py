@@ -50,6 +50,51 @@ def test_list_campaigns_accepts_keitaro_array_response(mock_list, mock_groups, m
     assert response.status_code == 200
     assert response.json()["items"][0]["group_name"] == "Основная"
 
+@patch("app.routers.campaigns.keitaro.list_traffic_sources")
+@patch("app.routers.campaigns.keitaro.list_groups")
+@patch("app.routers.campaigns.keitaro.list_domains")
+def test_references_include_full_country_list(mock_domains, mock_groups, mock_sources):
+    mock_domains.return_value = []
+    mock_groups.return_value = []
+    mock_sources.return_value = []
+
+    response = client.get("/api/v1/references")
+
+    assert response.status_code == 200
+    countries = response.json()["countries"]
+    assert len(countries) >= 240
+    assert {"code": "BY", "name": "Belarus"} in countries
+    assert {"code": "US", "name": "United States"} in countries
+
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.disable_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_campaign", new_callable=AsyncMock)
+def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get):
+    mock_update.return_value = {}
+    mock_disable.return_value = {}
+    mock_get.return_value = {
+        "id": 123, "name": "Renamed", "state": "disabled", "group_id": 7,
+        "group": {"name": "Group"}, "domain_id": 2, "traffic_source_id": 3
+    }
+
+    response = client.put("/api/v1/campaigns/123", json={
+        "name": "Renamed", "state": "disabled", "group_id": 7
+    })
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed"
+    assert response.json()["state"] == "disabled"
+    mock_update.assert_awaited_once_with(123, {"name": "Renamed", "group_id": 7})
+    mock_disable.assert_awaited_once_with(123)
+    mock_get.assert_awaited_once_with(123)
+
+@patch("app.routers.campaigns.keitaro.delete_campaign", new_callable=AsyncMock)
+def test_delete_campaign(mock_delete):
+    response = client.delete("/api/v1/campaigns/123")
+
+    assert response.status_code == 204
+    mock_delete.assert_awaited_once_with(123)
+
 @patch("app.routers.campaigns.keitaro.list_stream_filters")
 @patch("app.routers.campaigns.keitaro.create_campaign")
 @patch("app.routers.campaigns.keitaro.list_offers")
