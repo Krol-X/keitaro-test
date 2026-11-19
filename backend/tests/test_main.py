@@ -25,6 +25,23 @@ def test_list_campaigns(mock_list):
     assert data["items"][0]["campaign_id"] == 123
     assert data["items"][0]["name"] == "Летняя акция"
 
+@patch("app.routers.campaigns.keitaro.list_campaigns")
+def test_list_campaigns_accepts_keitaro_array_response(mock_list):
+    mock_list.return_value = [
+        {
+            "id": 123,
+            "name": "Летняя акция",
+            "group": [{"name": "Основная"}],
+            "traffic_source": {"name": "Источник"},
+            "state": "active",
+        }
+    ]
+
+    response = client.get("/api/v1/campaigns")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["group_name"] == "Основная"
+
 @patch("app.routers.campaigns.keitaro.create_campaign")
 @patch("app.routers.campaigns.keitaro.list_offers")
 @patch("app.routers.campaigns.keitaro.create_stream")
