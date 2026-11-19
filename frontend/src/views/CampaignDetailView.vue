@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6 bg-white rounded-lg shadow-sm">
+  <div v-if="campaign" class="p-6 bg-white rounded-lg shadow-sm">
     <!-- Заголовок и настройки (единый стиль) -->
     <div class="flex justify-between items-start mb-6 border-b pb-4">
       <div>
@@ -28,7 +28,9 @@
     <div class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-800">Потоки кампании</h3>
       <Accordion>
-        <AccordionTab v-for="stream in campaign?.streams || []" :key="stream.stream_id" :header="`Поток ${stream.position}: ${stream.name} (${stream.type})`" class="border-none shadow-sm">
+        <AccordionPanel v-for="stream in campaign?.streams || []" :key="stream.stream_id" :value="String(stream.stream_id)" class="border-none shadow-sm">
+          <AccordionHeader>Поток {{ stream.position }}: {{ stream.name }} ({{ stream.type }})</AccordionHeader>
+          <AccordionContent>
           <div class="p-4 bg-gray-50 rounded-lg">
             <!-- Общие данные потока -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -91,7 +93,8 @@
               </div>
             </div>
           </div>
-        </AccordionTab>
+          </AccordionContent>
+        </AccordionPanel>
       </Accordion>
       
       <!-- Кнопка сохранения (единая для всей карточки) -->
@@ -107,10 +110,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useCampaignStore } from '../stores/campaigns'
-import { DataTable, Column } from 'primevue/datatable'
-import { Accordion, AccordionTab } from 'primevue/accordion'
-import { Button } from 'primevue/button'
-import { Tag } from 'primevue/tag'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Accordion from 'primevue/accordion'
+import AccordionPanel from 'primevue/accordionpanel'
+import AccordionHeader from 'primevue/accordionheader'
+import AccordionContent from 'primevue/accordioncontent'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
 
 const route = useRoute()
 const store = useCampaignStore()
