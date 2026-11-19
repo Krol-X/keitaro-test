@@ -239,3 +239,107 @@ def test_create_campaign(mock_list_streams, mock_get, mock_enable, mock_stream, 
     assert forced_payload["filters"] == [{"name": "country", "mode": "accept", "payload": ["LT", "PL"]}]
     assert default_payload["schema"] == "landings"
     assert default_payload["offers"] == [{"offer_id": 42, "share": 100, "state": "active"}]
+
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_update_country_filter_replaces_countries(mock_update_stream, mock_list_streams):
+    mock_list_streams.return_value = [
+        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1,
+         "filters": [{"id": 33, "name": "country", "mode": "accept", "payload": ["PL", "LT"]}]},
+        {"id": 202, "campaign_id": 50, "type": "default", "position": 2,
+         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
+    ]
+    mock_update_stream.return_value = {}
+
+    response = client.put("/api/v1/campaigns/50/country-filter", json={
+        "excluded_countries": ["by", "RU"]
+    })
+
+    assert response.status_code == 200
+    assert response.json()["excluded_countries"] == ["BY", "RU"]
+    sent_stream_id, sent_payload = mock_update_stream.call_args.args
+    assert sent_stream_id == 201
+    assert sent_payload["filters"] == [{"id": 33, "name": "country", "mode": "accept", "payload": ["BY", "RU"]}]
+    assert sent_payload["type"] == "forced"
+
+
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.enable_stream", new_callable=AsyncMock)
+def test_update_country_filter_reenables_disabled_redirect_stream(mock_enable_stream, mock_update_stream, mock_list_streams):
+    mock_list_streams.return_value = [
+        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1, "state": "disabled",
+         "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
+        {"id": 202, "campaign_id": 50, "type": "default", "position": 2, "offers": []},
+    ]
+
+    response = client.put("/api/v1/campaigns/50/country-filter", json={"excluded_countries": ["LT"]})
+
+    assert response.status_code == 200
+    mock_enable_stream.assert_awaited_once_with(201)
+
+
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+def test_update_country_filter_creates_redirect_stream(mock_list_streams, mock_update_stream):
+    streams = [{"id": 202, "campaign_id": 50, "type": "default", "position": 1,
+                "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}]
+    mock_list_streams.side_effect = [streams, streams]
+    created = {}
+
+    async def fake_create_stream(payload):
+        created.update(payload)
+        return {"id": 300}
+
+    with patch("app.routers.campaigns.keitaro.create_stream", new=fake_create_stream), \
+         patch("app.routers.campaigns.keitaro.list_stream_filters", new_callable=AsyncMock,
+               return_value=[{"value": "country", "modes": {"accept": "accept"}}]):
+        response = client.put("/api/v1/campaigns/50/country-filter", json={"excluded_countries": ["BY"]})
+
+    assert response.status_code == 200
+    assert created["type"] == "forced"
+    assert created["position"] == 1
+    assert created["filters"] == [{"name": "country", "mode": "accept", "payload": ["BY"]}]
+    assert mock_update_stream.await_args.args[0] == 202
+    assert mock_update_stream.await_args.args[1] == {"position": 2}
+
+
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.disable_stream", new_callable=AsyncMock)
+def test_update_country_filter_clears_filter_when_list_empty(mock_disable_stream, mock_list_streams):
+    mock_list_streams.return_value = [
+        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1,
+         "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
+        {"id": 202, "campaign_id": 50, "type": "default", "position": 2, "offers": []},
+    ]
+
+    response = client.put("/api/v1/campaigns/50/country-filter", json={"excluded_countries": []})
+
+    assert response.status_code == 200
+    assert response.json()["excluded_countries"] == []
+    assert response.json()["removed"] is True
+    mock_disable_stream.assert_awaited_once_with(201)
+
+
+def test_update_country_filter_rejects_unknown_code():
+    response = client.put("/api/v1/campaigns/50/country-filter", json={"excluded_countries": ["ZZ"]})
+
+    assert response.status_code == 422
+
+
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_campaign):
+    mock_get_campaign.return_value = {"id": 50, "name": "Test", "state": "active"}
+    mock_list_streams.return_value = [
+        {"id": 201, "type": "forced", "position": 1,
+         "filters": [{"id": 33, "name": "country", "mode": "accept", "payload": ["PL", "LT"]}]},
+        {"id": 202, "type": "default", "position": 2, "offers": []},
+    ]
+
+    response = client.get("/api/v1/campaigns/50")
+
+    assert response.status_code == 200
+    forced, default = response.json()["streams"]
+    assert forced["country_filter"] == {"name": "country", "mode": "accept", "countries": ["LT", "PL"]}
+    assert default["country_filter"] is None

@@ -62,6 +62,12 @@ class KeitaroClient:
     async def update_stream(self, stream_id: int, data: dict):
         return await self._request("PUT", f"/streams/{stream_id}", json=data)
 
+    async def enable_stream(self, stream_id: int):
+        return await self._request("POST", f"/streams/{stream_id}/enable")
+
+    async def disable_stream(self, stream_id: int):
+        return await self._request("POST", f"/streams/{stream_id}/disable")
+
     async def list_domains(self):
         return await self._request("GET", "/domains")
 

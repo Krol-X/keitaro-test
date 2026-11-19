@@ -28,6 +28,23 @@
       </div>
     </section>
 
+    <section class="detail-edit-panel">
+      <div class="detail-section-heading">
+        <div>
+          <p class="eyebrow">Фильтрация трафика</p>
+          <h3>Страны для редиректа на Google</h3>
+        </div>
+        <button class="button button-primary" type="button" :disabled="savingCountries || !countriesChanged" @click="saveCountries">
+          {{ savingCountries ? 'Сохранение…' : 'Сохранить страны' }}
+        </button>
+      </div>
+      <p class="mb-3 mt-0 text-xs text-gray-500">
+        Выбранные страны попадают в отдельный поток с редиректом на Google. Пустой список отключает этот поток.
+      </p>
+      <CountrySelector v-model="draftCountries" :countries="references.countries" />
+      <p v-if="countriesError" class="mb-0 mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{{ countriesError }}</p>
+    </section>
+
     <!-- Настройки (единый стиль карточек) -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
       <div v-for="item in [
@@ -186,6 +203,7 @@ import AccordionHeader from 'primevue/accordionheader'
 import AccordionContent from 'primevue/accordioncontent'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
+import CountrySelector from '../components/CountrySelector.vue'
 
 const route = useRoute()
 const store = useCampaignStore()
@@ -207,6 +225,20 @@ const offerSearchQuery = ref('')
 const offerSearchError = ref('')
 const searchingOffers = ref(false)
 const selectedOfferId = ref('')
+const draftCountries = ref<string[]>([])
+const savedCountries = ref<string[]>([])
+const savingCountries = ref(false)
+const countriesError = ref('')
+const countriesChanged = computed(() => {
+  const left = [...draftCountries.value].sort().join(',')
+  const right = [...savedCountries.value].sort().join(',')
+  return left !== right
+})
+
+const collectSavedCountries = (campaignData: any) => {
+  const withFilter = (campaignData?.streams || []).find((stream: any) => stream.country_filter?.countries?.length)
+  return [...(withFilter?.country_filter?.countries || [])].sort()
+}
 
 const fetchDetail = async () => {
   try {
@@ -216,8 +248,25 @@ const fetchDetail = async () => {
     draft.domainId = String(campaign.value.domain_id ?? '')
     draft.groupId = String(campaign.value.group_id ?? '')
     draft.trafficSourceId = String(campaign.value.traffic_source_id ?? '')
+    const loadedCountries = collectSavedCountries(campaign.value)
+    savedCountries.value = loadedCountries
+    if (!countriesChanged.value) draftCountries.value = loadedCountries
   } catch (error: any) {
     saveError.value = error?.response?.data?.detail || 'Не удалось загрузить кампанию.'
+  }
+}
+
+const saveCountries = async () => {
+  if (!campaign.value || savingCountries.value || !countriesChanged.value) return
+  savingCountries.value = true
+  countriesError.value = ''
+  try {
+    await store.updateCountryFilter(campaign.value.campaign_id, draftCountries.value)
+    await fetchDetail()
+  } catch (error: any) {
+    countriesError.value = error?.response?.data?.detail || 'Не удалось сохранить страны фильтрации.'
+  } finally {
+    savingCountries.value = false
   }
 }
 

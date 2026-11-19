@@ -58,6 +58,12 @@ export const useCampaignStore = defineStore('campaigns', {
     async deleteCampaign(id: number) {
       await axios.delete(`${API_BASE}/campaigns/${id}`)
     },
+    async updateCountryFilter(campaignId: number, excludedCountries: string[]) {
+      const res = await axios.put(`${API_BASE}/campaigns/${campaignId}/country-filter`, {
+        excluded_countries: excludedCountries
+      })
+      return res.data
+    },
     async updateStreamOffers(campaignId: number, streamId: number, data: any) {
       const res = await axios.put(`${API_BASE}/campaigns/${campaignId}/streams/${streamId}/offers`, data)
       return res.data

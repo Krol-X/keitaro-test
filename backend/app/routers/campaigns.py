@@ -61,11 +61,7 @@ class CreateCampaignRequest(BaseModel):
 
     @validator("excluded_countries")
     def countries_valid(cls, v):
-        normalized = sorted(set(c.upper() for c in v))
-        invalid = [code for code in normalized if pycountry.countries.get(alpha_2=code) is None]
-        if invalid:
-            raise ValueError(f"Unknown country codes: {', '.join(invalid)}")
-        return normalized
+        return normalize_country_codes(v)
 
 class UpdateCampaignRequest(BaseModel):
     name: Optional[str] = None
@@ -102,10 +98,31 @@ class StreamOfferUpdate(BaseModel):
 class StreamOffersRequest(BaseModel):
     offers: List[StreamOfferUpdate]
 
+
+class UpdateFilterCountriesRequest(BaseModel):
+    excluded_countries: List[str]
+
+    @validator("excluded_countries")
+    def countries_valid(cls, v):
+        return normalize_country_codes(v)
+
 # --- Помощники ---
 
 def hash_request(data: dict) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def normalize_country_codes(codes: List[str]) -> List[str]:
+    normalized = sorted({code.strip().upper() for code in codes if code.strip()})
+    invalid = [code for code in normalized if pycountry.countries.get(alpha_2=code) is None]
+    if invalid:
+        raise ValueError(f"Unknown country codes: {', '.join(invalid)}")
+    return normalized
+
+
+COUNTRY_FILTER_NAMES = {"country", "countries"}
+REDIRECT_STREAM_NAME = "Forced Redirect (Google)"
+REDIRECT_PAYLOAD = "https://www.google.com/"
 
 
 def response_items(response: Any) -> List[Dict[str, Any]]:
@@ -171,6 +188,47 @@ def apply_offer_share_locks(streams: List[Dict[str, Any]], campaign_id: int, db:
         for offer in stream.get("offers") or []:
             offer["share_locked"] = (stream.get("stream_id"), offer.get("offer_id")) in locked_keys
     return streams
+
+
+def stream_country_filter(stream: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for stream_filter in stream.get("filters") or []:
+        if isinstance(stream_filter, dict) and str(stream_filter.get("name", "")).casefold() in COUNTRY_FILTER_NAMES:
+            return stream_filter
+    return None
+
+
+def find_redirect_stream(streams: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pick the redirect flow we manage: prefers a flow already carrying a country filter."""
+    forced = [stream for stream in streams if stream.get("type") == "forced"]
+    candidates = [stream for stream in forced if stream_country_filter(stream) is not None] or forced
+    return min(candidates, key=lambda stream: stream.get("position") or 0) if candidates else None
+
+
+async def resolve_country_filter_name() -> str:
+    stream_filters = response_items(await keitaro.list_stream_filters())
+    country_filter = next(
+        (item for item in stream_filters if str(item.get("value", "")).casefold() in COUNTRY_FILTER_NAMES),
+        None,
+    )
+    if country_filter is None:
+        raise HTTPException(status_code=502, detail="Keitaro does not expose a country stream filter")
+    return country_filter["value"]
+
+
+def decorate_streams(streams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Expose a normalized country filter per stream so the UI can render and edit it."""
+    for stream in streams:
+        stream_filter = stream_country_filter(stream)
+        payload = stream_filter.get("payload") if stream_filter else None
+        if isinstance(payload, str):
+            payload = [code for code in re.split(r"[,\s]+", payload) if code]
+        stream["country_filter"] = {
+            "name": stream_filter.get("name"),
+            "mode": stream_filter.get("mode"),
+            "countries": sorted({str(code).upper() for code in payload or []}),
+        } if stream_filter else None
+    return streams
+
 
 # --- Маршруты ---
 
@@ -324,25 +382,18 @@ async def create_campaign(
         db.commit()
 
         if request.excluded_countries:
-            stream_filters = response_items(await keitaro.list_stream_filters())
-            country_filter = next(
-                (item for item in stream_filters if str(item.get("value", "")).casefold() in {"country", "countries"}),
-                None,
-            )
-            if country_filter is None:
-                raise HTTPException(status_code=502, detail="Keitaro does not expose a country stream filter")
-
+            country_filter_name = await resolve_country_filter_name()
             await keitaro.create_stream({
                 "campaign_id": campaign_id,
-                "name": "Forced Redirect (Google)",
+                "name": REDIRECT_STREAM_NAME,
                 "position": 1,
                 "type": "forced",
                 "schema": "redirect",
                 "action_type": "http",
-                "action_payload": "https://www.google.com/",
+                "action_payload": REDIRECT_PAYLOAD,
                 "collect_clicks": True,
                 "filters": [{
-                    "name": country_filter["value"],
+                    "name": country_filter_name,
                     "mode": "accept",
                     "payload": request.excluded_countries,
                 }],
@@ -396,7 +447,9 @@ async def create_campaign(
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
     campaign = await keitaro.get_campaign(campaign_id)
-    streams = apply_offer_share_locks(normalize_streams(await keitaro.list_streams(campaign_id)), campaign_id, db)
+    streams = decorate_streams(
+        apply_offer_share_locks(normalize_streams(await keitaro.list_streams(campaign_id)), campaign_id, db)
+    )
 
     return {
         "campaign_id": campaign["id"],
@@ -533,6 +586,109 @@ async def update_stream_offers(
         op.status = "failed"
         db.commit()
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.put("/campaigns/{campaign_id}/country-filter")
+async def update_country_filter(
+    campaign_id: int,
+    request: UpdateFilterCountriesRequest,
+    db: Session = Depends(get_db)
+):
+    """Add, change or clear the excluded-country filter of the campaign's redirect flow."""
+    op = Operation(type="update_country_filter", status="running", stage="validation", campaign_id=campaign_id)
+    db.add(op)
+    db.commit()
+
+    try:
+        current_streams = normalize_streams(await keitaro.list_streams(campaign_id))
+        redirect_stream = find_redirect_stream(current_streams)
+        countries = request.excluded_countries
+        stream_id = int(redirect_stream["stream_id"]) if redirect_stream is not None else None
+        op.stream_id = stream_id
+
+        if not countries:
+            removed = False
+            current_filter = stream_country_filter(redirect_stream) if redirect_stream is not None else None
+            if redirect_stream is not None and current_filter is not None:
+                other_filters = [
+                    item for item in redirect_stream.get("filters") or []
+                    if isinstance(item, dict) and item is not current_filter
+                ]
+                if other_filters:
+                    await keitaro.update_stream(stream_id, {"filters": other_filters})
+                else:
+                    await keitaro.disable_stream(stream_id)
+                    removed = True
+            op.status = "succeeded"
+            op.stage = "completed"
+            db.commit()
+            return {
+                "excluded_countries": [],
+                "removed": removed,
+                "streams": decorate_streams(normalize_streams(await keitaro.list_streams(campaign_id))),
+            }
+
+        if redirect_stream is None:
+            country_filter_name = await resolve_country_filter_name()
+            default_positions = [int(s.get("position") or 0) for s in current_streams if s.get("type") == "default"]
+            position = min(default_positions) if default_positions else 1
+            created = await keitaro.create_stream({
+                "campaign_id": campaign_id,
+                "name": REDIRECT_STREAM_NAME,
+                "position": position,
+                "type": "forced",
+                "schema": "redirect",
+                "action_type": "http",
+                "action_payload": REDIRECT_PAYLOAD,
+                "collect_clicks": True,
+                "filters": [{"name": country_filter_name, "mode": "accept", "payload": countries}],
+            })
+            op.stream_id = int((created or {}).get("id") or 0) or None
+            for default_stream in current_streams:
+                if default_stream.get("type") == "default" and int(default_stream.get("position") or 0) >= position:
+                    await keitaro.update_stream(int(default_stream["stream_id"]), {
+                        "position": int(default_stream.get("position") or 0) + 1,
+                    })
+        else:
+            current_filter = stream_country_filter(redirect_stream)
+            filter_payload = {
+                "name": current_filter.get("name") if current_filter else await resolve_country_filter_name(),
+                "mode": "accept",
+                "payload": countries,
+            }
+            if current_filter is not None and current_filter.get("id") is not None:
+                filter_payload["id"] = current_filter["id"]
+            kept_filters = [
+                item for item in redirect_stream.get("filters") or []
+                if isinstance(item, dict) and item is not current_filter
+            ]
+            await keitaro.update_stream(stream_id, {
+                "name": redirect_stream.get("name") or REDIRECT_STREAM_NAME,
+                "type": "forced",
+                "schema": redirect_stream.get("schema") or "redirect",
+                "filters": [*kept_filters, filter_payload],
+            })
+            if redirect_stream.get("state") == "disabled":
+                await keitaro.enable_stream(stream_id)
+
+        op.status = "succeeded"
+        op.stage = "completed"
+        db.commit()
+        return {
+            "excluded_countries": countries,
+            "removed": False,
+            "streams": decorate_streams(normalize_streams(await keitaro.list_streams(campaign_id))),
+        }
+
+    except HTTPException:
+        op.status = "failed"
+        db.commit()
+        raise
+    except Exception as e:
+        op.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=502, detail=str(e))
+
 
 @router.get("/operations/{operation_id}")
 async def get_operation_status(operation_id: str, db: Session = Depends(get_db)):
