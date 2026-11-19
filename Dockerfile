@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1
 
 # Frontend build
-FROM node:20-alpine AS frontend-build
+FROM oven/bun:1 AS frontend-build
 WORKDIR /app/frontend
 
-COPY frontend/package*.json ./
-RUN npm install
+COPY frontend/package.json frontend/bun.lock* ./
+RUN bun install --frozen-lockfile
 
 COPY frontend/ ./
 ARG VITE_API_BASE=/api/v1
 ENV VITE_API_BASE=${VITE_API_BASE}
-RUN npm run build
+RUN bun run build
 
 # Runtime: FastAPI backend + nginx for SPA/static and reverse proxy
 FROM python:3.12-slim AS runtime

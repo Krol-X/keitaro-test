@@ -27,7 +27,7 @@
 ## Требования
 
 - **Docker** (рекомендуемый способ деплоя) или
-- **Python 3.11+** и **Node.js 20+** / npm для локальной разработки
+- **Python 3.11+** и **Bun 1.x** для локальной разработки
 
 ## Конфигурация (переменные окружения)
 
@@ -66,8 +66,8 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 cd frontend
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 По умолчанию dev-сервер: `http://localhost:5173`.
@@ -122,7 +122,7 @@ pytest
 
 # frontend
 cd frontend
-npm test
+bun run test
 ```
 
 ## Примечания
