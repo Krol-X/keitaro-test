@@ -39,10 +39,11 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCampaignStore } from '../stores/campaigns'
-import { DataTable, Column } from 'primevue/datatable'
-import { InputText } from 'primevue/inputtext'
-import { Button } from 'primevue/button'
-import { Tag } from 'primevue/tag'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import InputText from 'primevue/inputtext'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
 
 const store = useCampaignStore()
 const router = useRouter()
