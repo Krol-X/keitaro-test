@@ -72,39 +72,69 @@
                 <h4 class="font-semibold text-gray-800">Офферы потока</h4>
               </div>
               
-              <!-- Таблица активных офферов -->
-              <DataTable :value="stream.offers.filter(o => o.state === 'active')" class="mt-2" :showGridlines="true">
+              <!-- Офферы остаются в списке; отключённые помечаются статусом -->
+              <DataTable :value="stream.offers" class="mt-2" :showGridlines="true">
                 <Column field="offer_id" header="ID" class="w-20" />
                 <Column header="Название">
                   <template #body="{ data }">{{ data.name || `Оффер #${data.offer_id}` }}</template>
                 </Column>
-                <Column field="share" header="Доля (%)" class="w-20 text-center" />
+                <Column header="Доля / блокировка">
+                  <template #body="{ data }">
+                    <div class="flex items-center justify-center gap-2">
+                      <input
+                        v-model.number="data.share"
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        :disabled="data.share_locked"
+                        :aria-label="`Доля оффера ${data.offer_id} в процентах`"
+                        class="w-20 rounded border border-gray-300 px-2 py-1 text-center disabled:bg-gray-100 disabled:text-gray-500"
+                        @input="hasChanges = true"
+                      />
+                      <button
+                        type="button"
+                        class="rounded p-2 hover:bg-gray-100"
+                        :class="data.share_locked ? 'text-amber-700' : 'text-gray-500'"
+                        :aria-label="data.share_locked ? `Разблокировать долю оффера ${data.offer_id}` : `Заблокировать долю оффера ${data.offer_id}`"
+                        :title="data.share_locked ? 'Доля защищена от последующих изменений' : 'Заблокировать долю от последующих изменений'"
+                        @click="toggleOfferLock(stream.stream_id || stream.id, data.offer_id)"
+                      >
+                        <i :class="data.share_locked ? 'pi pi-lock' : 'pi pi-lock-open'" aria-hidden="true"></i>
+                      </button>
+                    </div>
+                  </template>
+                </Column>
                 <Column field="state" header="Состояние">
                   <template #body="{ data }">
-                    <Tag :value="data.state" :severity="data.state === 'active' ? 'success' : 'warning'" />
+                    <Tag :value="data.state === 'active' ? 'Активен' : 'Неактивен'" :severity="data.state === 'active' ? 'success' : 'secondary'" />
                   </template>
                 </Column>
                 <Column header="Действия" class="w-32">
                   <template #body="{ data }">
-                    <Button icon="pi pi-trash" @click="removeOffer(stream.stream_id || stream.id, data.offer_id)" severity="danger" size="small" outlined />
+                    <Button
+                      v-if="data.state === 'active'"
+                      label="Отключить"
+                      icon="pi pi-ban"
+                      @click="removeOffer(stream.stream_id || stream.id, data.offer_id)"
+                      severity="danger"
+                      size="small"
+                      outlined
+                    />
+                    <Button
+                      v-else
+                      label="Восстановить"
+                      icon="pi pi-replay"
+                      @click="restoreOffer(stream.stream_id || stream.id, data.offer_id)"
+                      severity="secondary"
+                      size="small"
+                      outlined
+                    />
                   </template>
                 </Column>
               </DataTable>
 
-              <!-- Список архивных/удалённых (согласно видео - можно восстановить) -->
-              <div v-if="stream.offers.some(o => o.state !== 'active')" class="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
-                <h5 class="text-sm font-bold text-yellow-800 mb-2">Архивные / Удалённые (можно восстановить)</h5>
-                <div class="flex flex-wrap gap-2">
-                  <Button 
-                    v-for="o in stream.offers.filter(o => o.state !== 'active')" 
-                    :key="o.offer_id"
-                    :label="`Восстановить ${o.offer_id}`" 
-                    @click="restoreOffer(stream.stream_id || stream.id, o.offer_id)"
-                    size="small"
-                    class="bg-yellow-100 text-yellow-800 border-yellow-300 hover:bg-yellow-200"
-                  />
-                </div>
-              </div>
+
             </div>
           </div>
           </AccordionContent>
@@ -212,6 +242,14 @@ const restoreOffer = (streamId: number, offerId: number) => {
   }
 }
 
+const toggleOfferLock = (streamId: number, offerId: number) => {
+  const offer = findOffer(streamId, offerId)
+  if (offer) {
+    offer.share_locked = !offer.share_locked
+    hasChanges.value = true
+  }
+}
+
 const saveAll = async () => {
   if (!campaign.value || saving.value) return
   saving.value = true
@@ -223,7 +261,8 @@ const saveAll = async () => {
         offers: (stream.offers || []).map((offer: any) => ({
           offer_id: offer.offer_id,
           share: Number(offer.share ?? 0),
-          state: offer.state === 'disabled' ? 'disabled' : 'active'
+          state: offer.state === 'disabled' ? 'disabled' : 'active',
+          share_locked: Boolean(offer.share_locked)
         }))
       })
     }

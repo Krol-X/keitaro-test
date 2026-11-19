@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
 
 from app.database import get_db, init_db
-from app.models import Operation
+from app.models import Operation, OfferShareLock
 from app.keitaro_client import KeitaroClient
 
 router = APIRouter(prefix="/api/v1", tags=["campaigns"])
@@ -91,6 +91,7 @@ class StreamOfferUpdate(BaseModel):
     offer_id: int
     share: int = Field(ge=0, le=100)
     state: str = "active"
+    share_locked: Optional[bool] = None
 
     @validator("state")
     def valid_state(cls, value):
@@ -152,7 +153,23 @@ def normalize_streams(response: Any) -> List[Dict[str, Any]]:
         item = dict(stream)
         item.setdefault("stream_id", item.get("id"))
         item.setdefault("offers", [])
+        for offer in item["offers"] or []:
+            offer.setdefault("share_locked", False)
         streams.append(item)
+    return streams
+
+
+def apply_offer_share_locks(streams: List[Dict[str, Any]], campaign_id: int, db: Session) -> List[Dict[str, Any]]:
+    stream_ids = [stream.get("stream_id") for stream in streams]
+    locks = db.query(OfferShareLock).filter(
+        OfferShareLock.campaign_id == campaign_id,
+        OfferShareLock.stream_id.in_(stream_ids or [-1]),
+        OfferShareLock.share_locked.is_(True),
+    ).all()
+    locked_keys = {(lock.stream_id, lock.offer_id) for lock in locks}
+    for stream in streams:
+        for offer in stream.get("offers") or []:
+            offer["share_locked"] = (stream.get("stream_id"), offer.get("offer_id")) in locked_keys
     return streams
 
 # --- Маршруты ---
@@ -377,9 +394,9 @@ async def create_campaign(
         raise HTTPException(status_code=502, detail=str(e))
 
 @router.get("/campaigns/{campaign_id}")
-async def get_campaign_detail(campaign_id: int):
+async def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
     campaign = await keitaro.get_campaign(campaign_id)
-    streams = await keitaro.list_streams(campaign_id)
+    streams = apply_offer_share_locks(normalize_streams(await keitaro.list_streams(campaign_id)), campaign_id, db)
 
     return {
         "campaign_id": campaign["id"],
@@ -453,10 +470,48 @@ async def update_stream_offers(
         if stream.get("campaign_id") != campaign_id:
             raise HTTPException(status_code=404, detail="Stream does not belong to campaign")
 
+        submitted = {offer.offer_id: offer for offer in request.offers}
+        if len(submitted) != len(request.offers):
+            raise HTTPException(status_code=422, detail="Duplicate offer IDs are not allowed")
+
+        persisted_locks = db.query(OfferShareLock).filter(
+            OfferShareLock.campaign_id == campaign_id,
+            OfferShareLock.stream_id == stream_id,
+            OfferShareLock.share_locked.is_(True),
+        ).all()
+        stream_offers = {int(offer.get("offer_id")): offer for offer in stream.get("offers", [])}
+        for lock in persisted_locks:
+            submitted_offer = submitted.get(lock.offer_id)
+            current_offer = stream_offers.get(lock.offer_id)
+            if submitted_offer is None:
+                raise HTTPException(status_code=409, detail=f"Locked offer {lock.offer_id} cannot be removed")
+            current_share = int((current_offer or {}).get("share", 0))
+            if submitted_offer.share != current_share and submitted_offer.share_locked is not False:
+                raise HTTPException(status_code=409, detail=f"Offer {lock.offer_id} share is locked; unlock it before changing the percentage")
+
         keitaro_update = {
-            "offers": [offer.dict() for offer in request.offers]
+            "offers": [offer.dict(exclude={"share_locked"}) for offer in request.offers]
         }
         updated_stream = await keitaro.update_stream(stream_id, keitaro_update)
+
+        for offer in request.offers:
+            if offer.share_locked is None:
+                continue
+            lock = db.query(OfferShareLock).filter_by(
+                campaign_id=campaign_id, stream_id=stream_id, offer_id=offer.offer_id
+            ).first()
+            if offer.share_locked:
+                if lock is None:
+                    db.add(OfferShareLock(
+                        campaign_id=campaign_id,
+                        stream_id=stream_id,
+                        offer_id=offer.offer_id,
+                        share_locked=True,
+                    ))
+                else:
+                    lock.share_locked = True
+            elif lock is not None:
+                db.delete(lock)
 
         op.status = "succeeded"
         db.commit()

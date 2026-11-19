@@ -1,7 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
+from app.models import OfferShareLock
 from unittest.mock import patch, AsyncMock
 
 client = TestClient(app)
@@ -87,6 +88,66 @@ def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get)
     mock_update.assert_awaited_once_with(123, {"name": "Renamed", "group_id": 7})
     mock_disable.assert_awaited_once_with(123)
     mock_get.assert_awaited_once_with(123)
+
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_stream):
+    mock_get_stream.return_value = {
+        "id": 12, "campaign_id": 50,
+        "offers": [{"offer_id": 8, "share": 35, "state": "active"}]
+    }
+    mock_update_stream.return_value = {"offers": [{"offer_id": 8, "share": 45, "state": "active"}]}
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 45, "state": "active", "share_locked": True}]
+    })
+
+    assert response.status_code == 200
+    sent_offer = mock_update_stream.call_args.args[1]["offers"][0]
+    assert sent_offer == {"offer_id": 8, "share": 45, "state": "active"}
+    db = SessionLocal()
+    try:
+        lock = db.query(OfferShareLock).filter_by(campaign_id=50, stream_id=12, offer_id=8).one()
+        assert lock.share_locked is True
+    finally:
+        db.close()
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_locked_offer_percentage_cannot_change_without_unlock(mock_update_stream, mock_get_stream):
+    db = SessionLocal()
+    db.add(OfferShareLock(campaign_id=50, stream_id=12, offer_id=8, share_locked=True))
+    db.commit()
+    db.close()
+    mock_get_stream.return_value = {
+        "id": 12, "campaign_id": 50,
+        "offers": [{"offer_id": 8, "share": 45, "state": "active"}]
+    }
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 55, "state": "active", "share_locked": True}]
+    })
+
+    assert response.status_code == 409
+    mock_update_stream.assert_not_awaited()
+
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+def test_campaign_detail_includes_persisted_offer_lock(mock_get_campaign, mock_list_streams):
+    db = SessionLocal()
+    db.add(OfferShareLock(campaign_id=50, stream_id=12, offer_id=8, share_locked=True))
+    db.commit()
+    db.close()
+    mock_get_campaign.return_value = {"id": 50, "name": "Test", "state": "active"}
+    mock_list_streams.return_value = [{
+        "id": 12, "type": "default",
+        "offers": [{"offer_id": 8, "share": 45, "state": "disabled"}]
+    }]
+
+    response = client.get("/api/v1/campaigns/50")
+
+    assert response.status_code == 200
+    assert response.json()["streams"][0]["offers"][0]["share_locked"] is True
 
 @patch("app.routers.campaigns.keitaro.delete_campaign", new_callable=AsyncMock)
 def test_delete_campaign(mock_delete):

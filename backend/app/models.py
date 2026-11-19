@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Enum, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Enum, ForeignKey, Boolean, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 import uuid
@@ -24,6 +24,17 @@ class Operation(Base):
     
     error_code = Column(String, nullable=True)
     user_id = Column(String, nullable=True)
+
+class OfferShareLock(Base):
+    """Persist UI-side share locks; Keitaro remains the source of offer shares."""
+    __tablename__ = "offer_share_locks"
+    __table_args__ = (UniqueConstraint("campaign_id", "stream_id", "offer_id", name="uq_offer_share_lock"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    campaign_id = Column(Integer, nullable=False, index=True)
+    stream_id = Column(Integer, nullable=False, index=True)
+    offer_id = Column(Integer, nullable=False)
+    share_locked = Column(Boolean, nullable=False, default=False)
 
 # Таблица для лога операций (согласно ТЗ)
 # Данные кампаний/потоков в БД не дублируются (источник истины — Keitaro)
