@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: keitaro-campaign-manager
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "80"
+      - key: KEITARO_BASE_URL
+        sync: false
+      - key: KEITARO_API_KEY
+        sync: false
+      - key: DEFAULT_DOMAIN_ID
+        sync: false
+      - key: DEFAULT_GROUP_ID
+        sync: false
+      - key: DEFAULT_TRAFFIC_SOURCE_ID
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:////data/keitaro.db
+    disk:
+      name: keitaro-data
+      mountPath: /data
+      sizeGB: 1

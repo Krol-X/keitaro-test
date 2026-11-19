@@ -75,6 +75,18 @@ bun run dev
 - Vite proxy перенаправляет `/api` на `http://localhost:8000` (см. `frontend/vite.config.ts`).
 - Базовый URL API во frontend можно переопределить через `VITE_API_BASE` (по умолчанию `http://localhost:8000/api/v1`).
 
+## Деплой на Render
+
+В репозитории есть Blueprint `render.yaml`. При создании Blueprint в Render задайте значения переменных, для которых включён `sync: false`:
+
+- `KEITARO_BASE_URL` — URL Keitaro без `/admin_api/v1`.
+- `KEITARO_API_KEY` — секретный Admin API ключ Keitaro.
+- `DEFAULT_DOMAIN_ID`, `DEFAULT_GROUP_ID`, `DEFAULT_TRAFFIC_SOURCE_ID` — ID домена, группы и источника трафика по умолчанию; задайте их для создания кампаний.
+
+`DATABASE_URL` уже указывает на SQLite-файл в `/data`, а диск Render подключён к этому пути, чтобы сохранять базу между перезапусками и деплоями. Диск требует платный план Render. Не добавляйте API-ключ в репозиторий: секрет задаётся через Blueprint prompt или Environment в панели Render.
+
+В Blueprint `PORT=80` согласован с портом nginx в Docker-образе, а health check выполняется по `/health`.
+
 ## Деплой в Docker
 
 `Dockerfile` собирает frontend и запускает backend + nginx в одном контейнере:
