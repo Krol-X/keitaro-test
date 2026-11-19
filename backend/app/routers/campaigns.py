@@ -81,6 +81,26 @@ class StreamOffersRequest(BaseModel):
 def hash_request(data: dict) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
+
+def response_items(response: Any) -> List[Dict[str, Any]]:
+    """Accept both Keitaro list responses and paginated {items: [...]} responses."""
+    if isinstance(response, list):
+        return response
+    if isinstance(response, dict):
+        items = response.get("items", [])
+        if isinstance(items, list):
+            return items
+    raise HTTPException(status_code=502, detail="Unexpected list response from Keitaro API")
+
+
+def related_name(value: Any) -> Optional[str]:
+    """Extract a name from related objects returned as either objects or arrays."""
+    if isinstance(value, dict):
+        return value.get("name")
+    if isinstance(value, list):
+        return next((item.get("name") for item in value if isinstance(item, dict) and item.get("name")), None)
+    return None
+
 # --- Маршруты ---
 
 @router.get("/campaigns")
@@ -93,12 +113,12 @@ async def list_campaigns(
     try:
         keitaro_res = await keitaro.list_campaigns(query=query, limit=1000, offset=0)
         items = []
-        for c in keitaro_res.get("items", []):
+        for c in response_items(keitaro_res):
             items.append(CampaignItem(
                 campaign_id=c["id"],
                 name=c["name"],
-                group_name=c.get("group", {}).get("name") if c.get("group") else None,
-                traffic_source_name=c.get("traffic_source", {}).get("name") if c.get("traffic_source") else None,
+                group_name=related_name(c.get("group")),
+                traffic_source_name=related_name(c.get("traffic_source")),
                 state=c["state"]
             ))
         
@@ -136,9 +156,9 @@ async def get_references():
     ]
     
     return ReferenceResponse(
-        domains=[{"id": d["id"], "name": d["name"]} for d in domains.get("items", [])],
-        groups=[{"id": g["id"], "name": g["name"]} for g in groups.get("items", [])],
-        traffic_sources=[{"id": t["id"], "name": t["name"]} for t in traffic_sources.get("items", [])],
+        domains=[{"id": d["id"], "name": d["name"]} for d in response_items(domains)],
+        groups=[{"id": g["id"], "name": g["name"]} for g in response_items(groups)],
+        traffic_sources=[{"id": t["id"], "name": t["name"]} for t in response_items(traffic_sources)],
         countries=countries,
         defaults={
             "domain_id": int(os.getenv("DEFAULT_DOMAIN_ID", 0)) or None,
@@ -150,7 +170,7 @@ async def get_references():
 @router.get("/offers")
 async def list_offers(query: Optional[str] = Query(None)):
     res = await keitaro.list_offers(query=query)
-    items = [OfferItem(offer_id=o["id"], name=o["name"]) for o in res.get("items", [])[:25]]
+    items = [OfferItem(offer_id=o["id"], name=o["name"]) for o in response_items(res)[:25]]
     return {"items": items}
 
 @router.post("/campaigns", status_code=201)
@@ -178,7 +198,7 @@ async def create_campaign(
                     "group_name": campaign.get("group", {}).get("name"),
                     "traffic_source_id": campaign.get("traffic_source_id"),
                     "traffic_source_name": campaign.get("traffic_source", {}).get("name"),
-                    "streams": streams.get("items", [])
+                    "streams": response_items(streams)
                 }
             return {"operation_id": existing_op.id, "stage": existing_op.stage, "status": existing_op.status}
         else:
@@ -197,7 +217,7 @@ async def create_campaign(
 
     try:
         offers = await keitaro.list_offers(query=str(request.offer_id))
-        if not any(o["id"] == request.offer_id for o in offers.get("items", [])):
+        if not any(o["id"] == request.offer_id for o in response_items(offers)):
             raise HTTPException(status_code=422, detail="Offer not found", field="offer_id")
         
         keitaro_data = {
@@ -259,7 +279,7 @@ async def create_campaign(
             "group_name": final_campaign.get("group", {}).get("name"),
             "traffic_source_id": final_campaign.get("traffic_source_id"),
             "traffic_source_name": final_campaign.get("traffic_source", {}).get("name"),
-            "streams": streams.get("items", [])
+            "streams": response_items(streams)
         }
 
     except Exception as e:
@@ -284,7 +304,7 @@ async def get_campaign_detail(campaign_id: int):
         "group_name": campaign.get("group", {}).get("name"),
         "traffic_source_id": campaign.get("traffic_source_id"),
         "traffic_source_name": campaign.get("traffic_source", {}).get("name"),
-        "streams": streams.get("items", [])
+        "streams": response_items(streams)
     }
 
 @router.put("/campaigns/{campaign_id}/streams/{stream_id}/offers")
