@@ -56,6 +56,40 @@
           <CountrySelector v-model="form.excludedCountries" :countries="references.countries" class="mt-2" />
         </fieldset>
 
+        <section v-if="archiveConflict" class="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+          <h3 class="text-sm font-semibold">Название занято кампанией в архиве</h3>
+          <p class="mt-1">
+            Кампания «{{ archiveConflict.name }}» уже существует в архиве Keitaro: при удалении имя остаётся
+            зарезервированным. Восстановите её со всеми потоками и офферами или создайте копию под другим названием.
+          </p>
+
+          <ul v-if="archiveConflict.archived_campaigns.length" class="mt-3 space-y-2">
+            <li
+              v-for="item in archiveConflict.archived_campaigns"
+              :key="item.campaign_id"
+              class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-white/70 px-3 py-2"
+            >
+              <span class="font-medium">#{{ item.campaign_id }} · {{ item.name }}</span>
+              <button
+                type="button"
+                class="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+                :disabled="restoring"
+                @click="restoreArchived(item)"
+              >
+                {{ restoring ? 'Восстанавливаем…' : 'Восстановить' }}
+              </button>
+            </li>
+          </ul>
+          <p v-else class="mt-2 text-xs">
+            Список архивных кампаний недоступен — восстановите кампанию в интерфейсе Keitaro.
+          </p>
+
+          <button type="button" class="mt-3 rounded-md border border-amber-400 px-3 py-1 text-xs font-medium" @click="renameCopy">
+            Создать под названием «{{ suggestedName }}»
+          </button>
+        </section>
+
+        <p v-if="restoreError" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ restoreError }}</p>
         <p v-if="error" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
         <div class="flex justify-end gap-3 border-t pt-4">
           <button type="button" class="rounded-md border px-4 py-2 text-sm" :disabled="submitting" @click="close">Отмена</button>
@@ -69,9 +103,12 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import axios from 'axios'
 import { useCampaignStore } from '../stores/campaigns'
 import CountrySelector from './CountrySelector.vue'
+
+const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
 
 interface Reference { id: number; name: string }
 interface Country { code: string; name: string }
@@ -95,11 +132,80 @@ const form = reactive({
   excludedCountries: ['PL', 'LT']
 })
 
+interface ArchivedCampaign { campaign_id: number; name: string }
+interface ArchiveConflict { code: string; message: string; name: string; archived_campaigns: ArchivedCampaign[] }
+
+const archiveConflict = ref<ArchiveConflict | null>(null)
+const restoring = ref(false)
+const restoreError = ref('')
+const firstAvailableName = ref('')
+
+const suggestedName = computed(() => firstAvailableName.value || `${form.name} (2)`)
+
+const resetConflict = () => {
+  archiveConflict.value = null
+  restoreError.value = ''
+  firstAvailableName.value = ''
+}
+
+// Keitaro держит имена архивных кампаний — предлагаем имя, которого нет ни среди активных, ни среди архивных.
+const suggestFreeName = async (baseName: string) => {
+  if (!store.references) await store.fetchReferences().catch(() => null)
+  const active = new Set((store.campaigns || []).map((item: any) => String(item.name).trim().toLocaleLowerCase()))
+  try {
+    const { data } = await axios.get(`${API_BASE}/campaigns/deleted`)
+    for (const item of data.items || data || []) active.add(String(item.name).trim().toLocaleLowerCase())
+  } catch {
+    // Архив может быть недоступен — тогда просто подбираем вариант по активным кампаниям.
+  }
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${baseName} (${index})`
+    if (!active.has(candidate.trim().toLocaleLowerCase())) return candidate
+  }
+  return `${baseName} (${Date.now()})`
+}
+
+const parseArchiveConflict = (detail: any): ArchiveConflict | null => {
+  if (!detail || typeof detail !== 'object') return null
+  if (detail.code !== 'NAME_IN_ARCHIVE') return null
+  return {
+    code: detail.code,
+    message: detail.message || '',
+    name: detail.name || form.name,
+    archived_campaigns: Array.isArray(detail.archived_campaigns) ? detail.archived_campaigns : []
+  }
+}
+
+const renameCopy = () => {
+  form.name = suggestedName.value
+  resetConflict()
+}
+
+const restoreArchived = async (item: ArchivedCampaign) => {
+  restoring.value = true
+  restoreError.value = ''
+  try {
+    await store.restoreCampaign(item.campaign_id)
+    await store.fetchCampaigns()
+    close()
+  } catch (cause: any) {
+    restoreError.value = cause?.response?.data?.detail || 'Не удалось восстановить кампанию из архива.'
+  } finally {
+    restoring.value = false
+  }
+}
+
 const close = () => emit('update:visible', false)
+
+watch(() => form.name, () => {
+  if (archiveConflict.value) resetConflict()
+  idempotencyKey = ''
+})
 
 watch(() => props.visible, async (isVisible) => {
   if (!isVisible) return
   error.value = ''
+  resetConflict()
   loadingOptions.value = true
   try {
     const [referenceData, offerData] = await Promise.all([store.fetchReferences(), store.fetchOffers()])
@@ -115,11 +221,18 @@ watch(() => props.visible, async (isVisible) => {
   }
 }, { immediate: true })
 
+// Ключ держим на попытку: повтор после конфликта имени — это уже другой запрос.
+let idempotencyKey = ''
+const nextIdempotencyKey = () => {
+  idempotencyKey = globalThis.crypto?.randomUUID?.() || `campaign-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 const submit = async () => {
   error.value = ''
+  restoreError.value = ''
   submitting.value = true
   try {
-    const idempotencyKey = globalThis.crypto?.randomUUID?.() || `campaign-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    if (!idempotencyKey) nextIdempotencyKey()
     await store.createCampaign({
       name: form.name,
       offer_id: Number(form.offerId),
@@ -131,7 +244,15 @@ const submit = async () => {
     await store.fetchCampaigns()
     close()
   } catch (cause: any) {
-    error.value = cause?.response?.data?.detail || 'Не удалось создать кампанию.'
+    const conflict = parseArchiveConflict(cause?.response?.data?.detail)
+    if (conflict) {
+      archiveConflict.value = conflict
+      firstAvailableName.value = await suggestFreeName(form.name)
+      nextIdempotencyKey()
+    } else {
+      error.value = cause?.response?.data?.detail || 'Не удалось создать кампанию.'
+      nextIdempotencyKey()
+    }
   } finally {
     submitting.value = false
   }

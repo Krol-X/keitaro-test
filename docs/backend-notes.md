@@ -42,6 +42,17 @@
 - **GET /api/v1/offers**: поиск офферов (ID/название)
 - **POST /api/v1/campaigns**: создание (Idempotency-Key, валидация, 2 потока: forced-Google, default-offer)
 
+## 4a. Архив кампаний и конфликт имени
+- `DELETE /campaigns/{id}` в Keitaro — это **не удаление, а перемещение в архив**; имя остаётся занятым.
+  Повторное создание с тем же именем падает с `{"name": ["Name has already been used in the archive"]}`.
+- **POST /api/v1/campaigns** при таком ответе отдаёт `409` с `detail = {code: "NAME_IN_ARCHIVE", message, name, archived_campaigns}`,
+  где `archived_campaigns` — совпадающие по имени записи из `GET /campaigns/deleted` (пустой список, если архив недоступен).
+  Остальные ошибки Keitaro остаются `502`.
+- **POST /api/v1/campaigns/{id}/restore** — восстановление из архива: `POST /campaigns/{id}/restore`,
+  затем включение кампании (`POST /campaigns/{id}/enable`), если Keitaro вернул её выключенной; ответ — как у карточки кампании.
+- UI: при `NAME_IN_ARCHIVE` форма создания показывает список архивных кампаний с кнопкой «Восстановить»
+  и предлагает свободное название вида «Имя (2)» (учитываются активные и архивные имена).
+
 ## 5. Карточка кампании
 - **GET /api/v1/campaigns/{id}**: данные кампании, потоки, офферы, ревизия
 

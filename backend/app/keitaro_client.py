@@ -41,6 +41,12 @@ class KeitaroClient:
     async def delete_campaign(self, campaign_id: int):
         return await self._request("DELETE", f"/campaigns/{campaign_id}")
 
+    async def list_deleted_campaigns(self):
+        return await self._request("GET", "/campaigns/deleted")
+
+    async def restore_campaign(self, campaign_id: int):
+        return await self._request("POST", f"/campaigns/{campaign_id}/restore")
+
     async def get_campaign(self, campaign_id: int):
         return await self._request("GET", f"/campaigns/{campaign_id}")
 

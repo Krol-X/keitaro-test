@@ -353,6 +353,68 @@ def decorate_streams(streams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return streams
 
 
+NAME_IN_ARCHIVE_MARKER = "name has already been used in the archive"
+
+
+def is_name_taken_in_archive(detail: Any) -> bool:
+    """Keitaro keeps archived campaign names reserved; the marker is the only reliable signal.
+
+    DELETE /campaigns/{id} is not a deletion — the campaign moves to the archive with its
+    name still unique, so creating another campaign with the same name fails with
+    {"name": ["Name has already been used in the archive"]}.
+    """
+    text = json.dumps(detail, ensure_ascii=False) if not isinstance(detail, str) else detail
+    return NAME_IN_ARCHIVE_MARKER in text.casefold()
+
+
+def archive_conflict_detail(name: str, archived: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "code": "NAME_IN_ARCHIVE",
+        "message": (
+            f"Кампания с названием «{name}» уже есть в архиве Keitaro. "
+            "Восстановите её или создайте кампанию с другим названием."
+        ),
+        "name": name,
+        "archived_campaigns": [
+            {
+                "campaign_id": item.get("id"),
+                "name": item.get("name"),
+                "state": item.get("state"),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+            }
+            for item in archived
+        ],
+    }
+
+
+async def archived_campaigns_named(name: str) -> List[Dict[str, Any]]:
+    try:
+        deleted = response_items(await keitaro.list_deleted_campaigns())
+    except HTTPException:
+        # Архив недоступен (например, старая версия Keitaro) — не мешаем пользователю,
+        # просто вернём конфликт без списка кандидатов.
+        return []
+    normalized = name.strip().casefold()
+    return [item for item in deleted if str(item.get("name", "")).strip().casefold() == normalized]
+
+
+def campaign_payload(campaign: Dict[str, Any], streams: Any) -> Dict[str, Any]:
+    return {
+        "campaign_id": campaign["id"],
+        "name": campaign["name"],
+        "state": campaign["state"],
+        "campaign_url": campaign.get("url"),
+        "domain_id": campaign.get("domain_id"),
+        "domain_name": related_name(campaign.get("domain")),
+        "group_id": campaign.get("group_id"),
+        "group_name": related_name(campaign.get("group")),
+        "traffic_source_id": campaign.get("traffic_source_id"),
+        "traffic_source_name": related_name(campaign.get("traffic_source")),
+        "streams": normalize_streams(streams),
+    }
+
+
 # --- Маршруты ---
 
 @router.get("/campaigns")
@@ -558,10 +620,16 @@ async def create_campaign(
             "streams": normalize_streams(streams)
         }
 
-    except HTTPException:
+    except HTTPException as exc:
         op.status = "failed"
         op.error_code = "UPSTREAM_OR_VALIDATION_ERROR"
         db.commit()
+        # Имя занято кампанией в архиве: отдаём список кандидатов, чтобы UI предложил восстановить.
+        if is_name_taken_in_archive(exc.detail):
+            raise HTTPException(
+                status_code=409,
+                detail=archive_conflict_detail(request.name, await archived_campaigns_named(request.name)),
+            ) from exc
         raise
     except Exception as e:
         op.status = "failed"
@@ -629,6 +697,44 @@ async def delete_campaign(campaign_id: int):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/campaigns/{campaign_id}/restore")
+async def restore_campaign(campaign_id: int, db: Session = Depends(get_db)):
+    """Bring an archived campaign back instead of recreating it under a new name.
+
+    Keitaro keeps the flows and offers of an archived campaign, so restoring is both
+    cheaper than recreating and preserves the original campaign ID (and its links).
+    """
+    op = Operation(type="restore_campaign", status="running", stage="validation", campaign_id=campaign_id)
+    db.add(op)
+    db.commit()
+
+    try:
+        await keitaro.restore_campaign(campaign_id)
+        campaign = await keitaro.get_campaign(campaign_id)
+
+        if campaign.get("state") != "active":
+            await keitaro.enable_campaign(campaign_id)
+            campaign = await keitaro.get_campaign(campaign_id)
+
+        streams = await keitaro.list_streams(campaign_id)
+
+        op.status = "succeeded"
+        op.stage = "completed"
+        db.commit()
+        return campaign_payload(campaign, streams)
+
+    except HTTPException as exc:
+        op.status = "failed"
+        op.error_code = "UPSTREAM_ERROR"
+        db.commit()
+        raise
+    except Exception as e:
+        op.status = "failed"
+        op.error_code = "INTERNAL_ERROR"
+        db.commit()
         raise HTTPException(status_code=502, detail=str(e))
 
 
