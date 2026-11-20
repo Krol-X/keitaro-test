@@ -7,7 +7,7 @@ import CampaignDetailView from '../src/views/CampaignDetailView.vue'
 const store = vi.hoisted(() => ({
   offers: [] as any[],
   getCampaignDetail: vi.fn(),
-  fetchReferences: vi.fn(async () => ({ domains: [], groups: [], traffic_sources: [], countries: [{ code: 'BY', name: 'Belarus' }] })),
+  fetchReferences: vi.fn(async () => ({ domains: [], groups: [], traffic_sources: [], countries: [{ code: 'BY', name: 'Belarus' }, { code: 'PL', name: 'Poland' }] })),
   fetchOffers: vi.fn(async () => []),
   fetchCampaigns: vi.fn(async () => undefined),
   updateCampaign: vi.fn(async () => ({})),
@@ -91,12 +91,13 @@ describe('CampaignDetailView layout', () => {
   it('saves the country filter only when the selection changes', async () => {
     store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
 
-    const { findByRole, getByRole, getByLabelText } = await renderView()
+    const { findByRole, getByRole, container } = await renderView()
 
     const saveButton = (await findByRole('button', { name: 'Сохранить страны' })) as HTMLButtonElement
     expect(saveButton.disabled).toBe(true)
 
-    await fireEvent.click(getByLabelText(/\(BY\)/))
+    const checkbox = container.querySelector('.country-checkbox') as HTMLInputElement
+    await fireEvent.click(checkbox)
     expect((getByRole('button', { name: 'Сохранить страны' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
