@@ -1,11 +1,5 @@
 <template>
   <div v-if="campaign" class="detail-page">
-    <nav class="breadcrumbs" aria-label="Хлебные крошки">
-      <router-link to="/">Кампании</router-link>
-      <span aria-hidden="true">/</span>
-      <span>{{ campaign.name }}</span>
-    </nav>
-
     <header class="detail-header">
       <div>
         <h1>{{ campaign.name }}</h1>
