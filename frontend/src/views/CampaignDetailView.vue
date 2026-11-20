@@ -67,14 +67,14 @@
                 <div class="stream-head">
                   <span class="stream-position">{{ stream.position }}</span>
                   <span class="stream-name">{{ stream.name }}</span>
-                  <span class="stream-type" :class="{ 'is-forced': stream.type === 'forced' }">{{ stream.type }}</span>
+                  <span class="stream-type" :class="{ 'is-forced': stream.type === 'forced' }">{{ streamTypeLabel(stream.type) }}</span>
                   <div class="stream-head-right">
                     <span class="status-pill" :class="stream.state === 'active' ? 'status-active' : 'status-disabled'">
                       <span class="status-dot"></span>{{ stream.state === 'active' ? 'Активен' : 'Выключен' }}
                     </span>
                   </div>
                 </div>
-                <div v-if="stream.type === 'forced'" class="stream-body">
+                <div v-if="isRedirectStream(stream)" class="stream-body">
                   <div>
                     <div class="redirect-label">Редирект</div>
                     <div class="redirect-value mt-1">{{ stream.action_payload || stream.redirect_url || '—' }}</div>
@@ -84,7 +84,7 @@
                     <p class="mb-0 mt-1 text-sm text-gray-700">{{ describeFilters(stream) }}</p>
                   </div>
                 </div>
-                <div v-if="stream.type === 'default'" class="stream-body">
+                <div v-if="holdsOffers(stream)" class="stream-body">
                   <div class="offer-add">
                     <form class="offer-add-row" @submit.prevent="searchOffers">
                       <input
@@ -238,7 +238,9 @@ const countriesChanged = computed(() => {
 })
 
 const collectSavedCountries = (campaignData: any) => {
-  const withFilter = (campaignData?.streams || []).find((stream: any) => stream.country_filter?.countries?.length)
+  // Фильтр стран живёт на перехватывающем потоке с редиректом; у замыкающего фильтров не бывает.
+  const candidates = (campaignData?.streams || []).filter((stream: any) => isRedirectStream(stream))
+  const withFilter = candidates.find((stream: any) => stream.country_filter?.countries?.length)
   return [...(withFilter?.country_filter?.countries || [])].sort()
 }
 
@@ -294,6 +296,16 @@ const saveCountries = async () => {
     savingCountries.value = false
   }
 }
+
+// В Keitaro поток хранит офферы, если его схема — landings (тип forced у нас всегда редирект).
+const holdsOffers = (stream: any) => stream.type !== 'forced' && (!stream.schema || stream.schema === 'landings')
+const isRedirectStream = (stream: any) => stream.type === 'forced' || stream.schema === 'redirect'
+const STREAM_TYPE_LABELS: Record<string, string> = {
+  forced: 'Перехватывающий',
+  regular: 'Обычный',
+  default: 'Замыкающий'
+}
+const streamTypeLabel = (type: string) => STREAM_TYPE_LABELS[type] || type || '—'
 
 const describeFilters = (stream: any) => {
   const filters = stream.filters || []
@@ -370,7 +382,7 @@ const saveAll = async () => {
   saveError.value = ''
   try {
     for (const stream of campaign.value.streams || []) {
-      if (stream.type !== 'default') continue
+      if (!holdsOffers(stream)) continue
       await store.updateStreamOffers(campaign.value.campaign_id, stream.stream_id || stream.id, {
         offers: (stream.offers || []).map((offer: any) => ({
           offer_id: offer.offer_id,

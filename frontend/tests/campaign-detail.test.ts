@@ -67,6 +67,21 @@ describe('CampaignDetailView layout', () => {
     expect(queryAllByText('ID: 1')).toHaveLength(0)
   })
 
+  it('shows offer controls for a regular flow, not only for the catch-all one', async () => {
+    const fixture = structuredClone(campaignFixture)
+    // Keitaro отдаёт второй поток как regular с schema landings, если его создали не мы.
+    fixture.streams[1].type = 'regular'
+    fixture.streams[1].schema = 'landings'
+    store.getCampaignDetail.mockResolvedValue(fixture)
+
+    const { findByRole, getByRole, getByText, getByLabelText } = await renderView()
+
+    await findByRole('heading', { name: 'Потоки и офферы' })
+    expect(getByText('Обычный')).toBeTruthy()
+    expect(getByLabelText('Поиск офферов для добавления')).toBeTruthy()
+    expect(getByRole('button', { name: 'Добавить' })).toBeTruthy()
+  })
+
   it('shows one save action per section', async () => {
     store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
 
