@@ -120,9 +120,6 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Campaign detail: header, panels, streams */
 .detail-page { display: grid; gap: 16px; }
-.breadcrumbs { display: flex; align-items: center; gap: 8px; color: #98a5b8; font-size: 12px; }
-.breadcrumbs a { color: #7b8a9e; text-decoration: none; }
-.breadcrumbs a:hover { color: #2478ee; }
 .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .detail-header h1 { margin: 0 0 9px; font-size: clamp(23px, 2.4vw, 29px); line-height: 1.2; letter-spacing: -.035em; }
 .detail-subline { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #7b8a9e; font-size: 12px; }
