@@ -9,10 +9,12 @@ import pycountry
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, Query, status
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
 
-from app.database import get_db, init_db
+from app.database import get_db
 from app.models import Operation, OfferShareLock
 from app.keitaro_client import KeitaroClient
 
@@ -253,10 +255,15 @@ def stream_country_filter(stream: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def find_redirect_stream(streams: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Pick the redirect flow we manage: prefers a flow already carrying a country filter."""
-    forced = [stream for stream in streams if stream.get("type") == "forced"]
-    candidates = [stream for stream in forced if stream_country_filter(stream) is not None] or forced
-    return min(candidates, key=lambda stream: stream.get("position") or 0) if candidates else None
+    # Match the signature written by this application, never just the priority or filter.
+    candidates = [stream for stream in streams if (
+        stream.get("type") == "forced" and stream.get("schema") == "redirect"
+        and stream.get("name") == REDIRECT_STREAM_NAME
+        and stream.get("action_payload") == REDIRECT_PAYLOAD
+    )]
+    if len(candidates) > 1:
+        raise HTTPException(status_code=409, detail="Multiple managed country redirects; check the campaign in Keitaro")
+    return next(iter(candidates), None)
 
 
 async def ensure_stream_filters(stream: Optional[Dict[str, Any]], filters: List[Dict[str, Any]]) -> None:
@@ -495,6 +502,36 @@ async def list_offers(query: Optional[str] = Query(None)):
     items = [OfferItem(offer_id=o["id"], name=o["name"]) for o in offers[:25]]
     return {"items": items}
 
+async def read_created_campaign(campaign_id: int):
+    campaign = await keitaro.get_campaign(campaign_id)
+    streams = await keitaro.list_streams(campaign_id)
+    return campaign_payload(campaign, streams)
+
+
+async def replay_create(op: Operation, req_hash: str, db: Session):
+    if op.request_hash != req_hash:
+        raise HTTPException(status_code=409, detail="Idempotency key conflict with different request")
+    if op.status == "unknown" and op.stage == "campaign_creation" and not op.campaign_id:
+        # A lost POST response may hide a partially created (disabled) campaign. A miss
+        # in a list response is not proof of absence and must never trigger another POST.
+        items = response_items(await keitaro.list_campaigns(limit=1000, offset=0))
+        matches = [item for item in items if item.get("alias") == op.alias]
+        if len(matches) == 1:
+            op.campaign_id = matches[0]["id"]
+            db.commit()
+    if op.status == "unknown" and op.stage == "enabling" and op.campaign_id:
+        campaign = await keitaro.get_campaign(op.campaign_id)
+        if campaign.get("state") == "active":
+            op.status, op.stage, op.error_code = "succeeded", "completed", None
+            db.commit()
+    if op.status == "succeeded":
+        return JSONResponse(await read_created_campaign(op.campaign_id))
+    return JSONResponse({
+        "operation_id": op.id, "status": op.status, "stage": op.stage,
+        "campaign_id": op.campaign_id, "alias": op.alias, "error_code": op.error_code,
+    }, status_code=202 if op.status == "running" else 200)
+
+
 @router.post("/campaigns", status_code=201)
 async def create_campaign(
     request: CreateCampaignRequest,
@@ -505,26 +542,7 @@ async def create_campaign(
 
     existing_op = db.query(Operation).filter(Operation.idempotency_key == idempotency_key).first()
     if existing_op:
-        if existing_op.request_hash == req_hash:
-            if existing_op.status == "succeeded":
-                campaign = await keitaro.get_campaign(existing_op.campaign_id)
-                streams = await keitaro.list_streams(existing_op.campaign_id)
-                return {
-                    "campaign_id": campaign["id"],
-                    "name": campaign["name"],
-                    "state": campaign["state"],
-                    "campaign_url": campaign.get("url"),
-                    "domain_id": campaign.get("domain_id"),
-                    "domain_name": related_name(campaign.get("domain")),
-                    "group_id": campaign.get("group_id"),
-                    "group_name": related_name(campaign.get("group")),
-                    "traffic_source_id": campaign.get("traffic_source_id"),
-                    "traffic_source_name": related_name(campaign.get("traffic_source")),
-                    "streams": normalize_streams(streams)
-                }
-            return {"operation_id": existing_op.id, "stage": existing_op.stage, "status": existing_op.status}
-        else:
-            raise HTTPException(status_code=409, detail="Idempotency key conflict with different request")
+        return await replay_create(existing_op, req_hash, db)
 
     op = Operation(
         type="create_campaign",
@@ -535,12 +553,19 @@ async def create_campaign(
         user_id="system"
     )
     db.add(op)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        winner = db.query(Operation).filter_by(idempotency_key=idempotency_key).one_or_none()
+        if winner is None:
+            raise
+        return await replay_create(winner, req_hash, db)
 
     try:
         offers = await keitaro.list_offers()
         if not any(o["id"] == request.offer_id for o in response_items(offers)):
-            raise HTTPException(status_code=422, detail="Offer not found", field="offer_id")
+            raise HTTPException(status_code=422, detail="Offer not found")
 
         alias = generated_campaign_alias(request.name, idempotency_key)
         keitaro_data = {
@@ -557,6 +582,8 @@ async def create_campaign(
             if value is not None:
                 keitaro_data[field] = str(value) if field == "group_id" else value
 
+        op.stage, op.alias = "campaign_creation", alias
+        db.commit()
         campaign = await keitaro.create_campaign(keitaro_data)
         campaign_id = campaign["id"]
         alias = campaign.get("alias", f"cmp_{campaign_id}")
@@ -597,45 +624,35 @@ async def create_campaign(
             "offers": [{"offer_id": request.offer_id, "share": 100, "state": "active"}],
         })
 
+        op.stage = "enabling"
+        db.commit()
         await keitaro.enable_campaign(campaign_id)
 
         op.status = "succeeded"
         op.stage = "completed"
         db.commit()
 
-        final_campaign = await keitaro.get_campaign(campaign_id)
-        streams = await keitaro.list_streams(campaign_id)
-
-        return {
-            "campaign_id": campaign_id,
-            "name": final_campaign["name"],
-            "state": final_campaign["state"],
-            "campaign_url": final_campaign.get("url"),
-            "domain_id": final_campaign.get("domain_id"),
-            "domain_name": related_name(final_campaign.get("domain")),
-            "group_id": final_campaign.get("group_id"),
-            "group_name": related_name(final_campaign.get("group")),
-            "traffic_source_id": final_campaign.get("traffic_source_id"),
-            "traffic_source_name": related_name(final_campaign.get("traffic_source")),
-            "streams": normalize_streams(streams)
-        }
-
     except HTTPException as exc:
-        op.status = "failed"
-        op.error_code = "UPSTREAM_OR_VALIDATION_ERROR"
+        archive_conflict = op.stage == "campaign_creation" and is_name_taken_in_archive(exc.detail)
+        ambiguous = op.stage != "validation" and exc.status_code >= 500 and not archive_conflict
+        op.status = "unknown" if ambiguous else "failed"
+        op.error_code = "OUTCOME_UNKNOWN" if ambiguous else "UPSTREAM_OR_VALIDATION_ERROR"
         db.commit()
         # Имя занято кампанией в архиве: отдаём список кандидатов, чтобы UI предложил восстановить.
-        if is_name_taken_in_archive(exc.detail):
+        if archive_conflict:
             raise HTTPException(
                 status_code=409,
                 detail=archive_conflict_detail(request.name, await archived_campaigns_named(request.name)),
             ) from exc
         raise
     except Exception as e:
-        op.status = "failed"
+        op.status = "failed" if op.stage == "validation" else "unknown"
         op.error_code = "INTERNAL_ERROR"
         db.commit()
         raise HTTPException(status_code=502, detail=str(e))
+
+    # A failed response read cannot undo the acknowledged activation.
+    return await read_created_campaign(campaign_id)
 
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
@@ -644,7 +661,10 @@ async def get_campaign_detail(campaign_id: int, db: Session = Depends(get_db)):
         apply_offer_share_locks(normalize_streams(await keitaro.list_streams(campaign_id)), campaign_id, db)
     )
 
+    redirect = find_redirect_stream(streams)
+    active_filter = redirect.get("country_filter") if redirect and redirect.get("state") != "disabled" else None
     return {
+        "excluded_countries": active_filter["countries"] if active_filter else [],
         "campaign_id": campaign["id"],
         "name": campaign["name"],
         "state": campaign["state"],
@@ -957,7 +977,7 @@ async def update_country_filter(
                     if isinstance(item, dict) and item is not current_filter
                 ]
                 if other_filters:
-                    await keitaro.update_stream(stream_id, {"filters": other_filters})
+                    await keitaro.update_stream(stream_id, {**stream_identity_fields(redirect_stream), "filters": other_filters})
                 else:
                     await keitaro.disable_stream(stream_id)
                     removed = True
@@ -1005,9 +1025,7 @@ async def update_country_filter(
                 if isinstance(item, dict) and item is not current_filter
             ]
             await keitaro.update_stream(stream_id, {
-                "name": redirect_stream.get("name") or REDIRECT_STREAM_NAME,
-                "type": "forced",
-                "schema": redirect_stream.get("schema") or "redirect",
+                **stream_identity_fields(redirect_stream),
                 "filters": [*kept_filters, filter_payload],
             })
             if redirect_stream.get("state") == "disabled":

@@ -310,13 +310,6 @@ const countriesChanged = computed(() => {
   return left !== right
 })
 
-const collectSavedCountries = (campaignData: any) => {
-  // Фильтр стран живёт на перехватывающем потоке с редиректом; у замыкающего фильтров не бывает.
-  const candidates = (campaignData?.streams || []).filter((stream: any) => isRedirectStream(stream))
-  const withFilter = candidates.find((stream: any) => stream.country_filter?.countries?.length)
-  return [...(withFilter?.country_filter?.countries || [])].sort()
-}
-
 const fetchDetail = async () => {
   try {
     campaign.value = await store.getCampaignDetail(Number(route.params.id))
@@ -326,7 +319,7 @@ const fetchDetail = async () => {
     draft.domainId = String(campaign.value.domain_id ?? '')
     draft.groupId = String(campaign.value.group_id ?? '')
     draft.trafficSourceId = String(campaign.value.traffic_source_id ?? '')
-    const loadedCountries = collectSavedCountries(campaign.value)
+    const loadedCountries = [...(campaign.value.excluded_countries || [])].sort()
     // Не затираем выбор пользователя, если он уже что-то изменил до ответа сервера.
     const pendingEdit = [...draftCountries.value].sort().join(',') !== [...savedCountries.value].sort().join(',')
     savedCountries.value = loadedCountries
@@ -495,7 +488,7 @@ const offerPayload = (stream: any) => (stream.offers || []).map((offer: any) => 
 
 // Сравнение с последним сохранённым состоянием потока, чтобы не гонять PUT по всем потокам подряд.
 const snapshot = (offers: any[]) => JSON.stringify(
-  offers.map((offer: any) => [Number(offer.offer_id), Number(offer.share ?? 0), offer.state === 'disabled' ? 'disabled' : 'active'])
+  offers.map((offer: any) => [Number(offer.offer_id), Number(offer.share ?? 0), offer.state === 'disabled' ? 'disabled' : 'active', Boolean(offer.share_locked)])
     .sort((a, b) => a[0] - b[0])
 )
 const savedSnapshots = ref<Record<number, string>>({})

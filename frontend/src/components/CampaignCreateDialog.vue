@@ -6,8 +6,14 @@
         <button type="button" class="rounded px-2 py-1 text-gray-500 hover:bg-gray-100" aria-label="Закрыть" @click="close">✕</button>
       </div>
 
-      <div v-if="loadingOptions" class="py-8 text-center text-gray-500">Загрузка справочников Keitaro…</div>
-      <form v-else class="space-y-4" @submit.prevent="submit">
+      <section v-if="pending" aria-live="polite" class="space-y-3 text-sm">
+        <p>Проверяем создание кампании «{{ pending.payload.name }}». Повтор использует тот же ключ.</p>
+        <p v-if="error" role="alert">{{ error }}</p>
+        <button type="button" :disabled="submitting" class="rounded-md border px-3 py-2" @click="submit">Проверить результат</button>
+        <button type="button" :disabled="submitting" class="ml-3 underline" @click="discardAttempt">Завершить проверку</button>
+      </section>
+      <div v-if="loadingOptions && !pending" class="py-8 text-center text-gray-500">Загрузка справочников Keitaro…</div>
+      <form v-else v-show="!pending" class="space-y-4" @submit.prevent="submit">
         <label class="block text-sm font-medium text-gray-700">
           Название кампании
           <input v-model.trim="form.name" required maxlength="120" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2" placeholder="Например, Весенняя кампания" />
@@ -90,7 +96,7 @@
         </section>
 
         <p v-if="restoreError" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ restoreError }}</p>
-        <p v-if="error" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
+        <p v-if="error && !pending" class="rounded-md bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
         <div class="flex justify-end gap-3 border-t pt-4">
           <button type="button" class="rounded-md border px-4 py-2 text-sm" :disabled="submitting" @click="close">Отмена</button>
           <button type="submit" class="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" :disabled="submitting || offers.length === 0">
@@ -199,12 +205,32 @@ const close = () => emit('update:visible', false)
 
 watch(() => form.name, () => {
   if (archiveConflict.value) resetConflict()
-  idempotencyKey = ''
 })
+
+const makePayload = () => ({
+  name: form.name, offer_id: Number(form.offerId), excluded_countries: [...form.excludedCountries],
+  domain_id: form.domainId ? Number(form.domainId) : undefined,
+  group_id: form.groupId ? Number(form.groupId) : undefined,
+  traffic_source_id: form.trafficSourceId ? Number(form.trafficSourceId) : undefined
+})
+type Attempt = { key: string; payload: ReturnType<typeof makePayload> }
+const storageKey = `campaign-create:${API_BASE}`
+const pending = ref<Attempt | null>(JSON.parse(sessionStorage.getItem(storageKey) || 'null'))
+const setAttempt = (value: Attempt | null) => {
+  if (value) sessionStorage.setItem(storageKey, JSON.stringify(value))
+  else sessionStorage.removeItem(storageKey)
+  pending.value = value
+}
+const discardAttempt = () => {
+  if (window.confirm('Проверьте кампанию в Keitaro. Следующая отправка начнёт новую операцию. Завершить проверку?')) {
+    setAttempt(null)
+    error.value = ''
+  }
+}
 
 watch(() => props.visible, async (isVisible) => {
   if (!isVisible) return
-  error.value = ''
+  if (!pending.value) error.value = ''
   resetConflict()
   loadingOptions.value = true
   try {
@@ -221,37 +247,40 @@ watch(() => props.visible, async (isVisible) => {
   }
 }, { immediate: true })
 
-// Ключ держим на попытку: повтор после конфликта имени — это уже другой запрос.
-let idempotencyKey = ''
-const nextIdempotencyKey = () => {
-  idempotencyKey = globalThis.crypto?.randomUUID?.() || `campaign-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
 const submit = async () => {
+  if (submitting.value) return
   error.value = ''
   restoreError.value = ''
   submitting.value = true
   try {
-    if (!idempotencyKey) nextIdempotencyKey()
-    await store.createCampaign({
-      name: form.name,
-      offer_id: Number(form.offerId),
-      excluded_countries: form.excludedCountries,
-      domain_id: form.domainId ? Number(form.domainId) : undefined,
-      group_id: form.groupId ? Number(form.groupId) : undefined,
-      traffic_source_id: form.trafficSourceId ? Number(form.trafficSourceId) : undefined
-    }, idempotencyKey)
+    if (!pending.value) setAttempt({
+      key: globalThis.crypto?.randomUUID?.() || `campaign-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      payload: makePayload()
+    })
+    const attempt = pending.value!
+    const result = await store.createCampaign(attempt.payload, attempt.key)
+    if (result.operation_id) {
+      const info = `Операция ${result.operation_id}, этап: ${result.stage}.` +
+        (result.campaign_id ? ` Кампания #${result.campaign_id}.` : result.alias ? ` Alias: ${result.alias}.` : '')
+      error.value = result.status === 'running' ? `${info} Ещё выполняется.` :
+        `${info} ${result.status === 'failed' ? 'Операция не завершена.' : 'Результат не подтверждён.'} Проверьте кампанию в Keitaro.`
+      if (result.status === 'failed' && result.stage === 'validation') setAttempt(null)
+      return
+    }
+    if (!result.campaign_id) throw new Error('Unexpected create response')
+    setAttempt(null)
     await store.fetchCampaigns()
     close()
   } catch (cause: any) {
     const conflict = parseArchiveConflict(cause?.response?.data?.detail)
     if (conflict) {
+      setAttempt(null)
       archiveConflict.value = conflict
       firstAvailableName.value = await suggestFreeName(form.name)
-      nextIdempotencyKey()
     } else {
-      error.value = cause?.response?.data?.detail || 'Не удалось создать кампанию.'
-      nextIdempotencyKey()
+      const detail = cause?.response?.data?.detail
+      if (cause?.response?.status === 422) setAttempt(null)
+      error.value = typeof detail === 'string' ? detail : 'Не удалось подтвердить создание кампании.'
     }
   } finally {
     submitting.value = false

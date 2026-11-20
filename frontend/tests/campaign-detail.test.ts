@@ -26,6 +26,7 @@ const campaignFixture = {
   domain_id: 1,
   group_id: 2,
   traffic_source_id: 3,
+  excluded_countries: ['LT', 'PL'],
   streams: [
     {
       stream_id: 201, id: 201, position: 1, name: 'Google редирект', type: 'forced', state: 'active',
@@ -102,6 +103,26 @@ describe('CampaignDetailView layout', () => {
     const input = (await findByLabelText('Доля оффера 8 в процентах')) as HTMLInputElement
     expect(input.value).toBe('60')
     expect(input.disabled).toBe(true)
+  })
+
+  it('saves a lock-only edit without changing share or state', async () => {
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+    const { findByRole } = await renderView()
+    await fireEvent.click(await findByRole('button', { name: 'Разблокировать долю оффера 8' }))
+    await fireEvent.click(await findByRole('button', { name: 'Сохранить офферы' }))
+    expect(store.updateStreamOffers).toHaveBeenCalledWith(50, 202, {
+      offers: [{ offer_id: 8, share: 60, state: 'active', share_locked: false }]
+    })
+  })
+
+  it('does not reselect countries from a disabled redirect on reload', async () => {
+    const fixture = structuredClone(campaignFixture)
+    fixture.streams[0].state = 'disabled'
+    fixture.excluded_countries = []
+    store.getCampaignDetail.mockResolvedValue(fixture)
+    const { findByText, queryByLabelText } = await renderView()
+    expect(await findByText('Выбрано 0 из 2')).toBeTruthy()
+    expect(queryByLabelText('Выбранные страны')).toBeNull()
   })
 
   it('saves the country filter only when the selection changes', async () => {

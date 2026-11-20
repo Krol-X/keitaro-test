@@ -15,7 +15,7 @@ const store = vi.hoisted(() => ({
   })),
   fetchOffers: vi.fn(async () => [{ offer_id: 8, name: 'Binomo' }]),
   fetchCampaigns: vi.fn(async () => undefined),
-  createCampaign: vi.fn(async () => ({})),
+  createCampaign: vi.fn(async (): Promise<any> => ({ campaign_id: 55 })),
   restoreCampaign: vi.fn(async () => ({}))
 }))
 
@@ -39,6 +39,7 @@ const CONFLICT = {
 }
 
 afterEach(() => {
+  sessionStorage.clear()
   cleanup()
   vi.clearAllMocks()
 })
@@ -113,4 +114,26 @@ describe('CampaignCreateDialog archive conflict', () => {
     expect(await findByText('Keitaro error: boom')).toBeTruthy()
     expect(queryByText('Название занято кампанией в архиве')).toBeNull()
   })
+})
+
+
+it('rechecks the same submission after a lost response and reload until success is confirmed', async () => {
+  store.createCampaign.mockRejectedValueOnce(new Error('connection lost'))
+    .mockResolvedValueOnce({ operation_id: 'op-1', stage: 'enabling', status: 'running' })
+  const dialog = await renderDialog()
+  await fireEvent.click(await dialog.findByRole('button', { name: 'Создать' }))
+  await dialog.findByText('Не удалось подтвердить создание кампании.')
+  dialog.unmount()
+  const resumed = render(CampaignCreateDialog, { props: { visible: true } })
+  const check = await resumed.findByRole('button', { name: 'Проверить результат' })
+  await fireEvent.click(check)
+  expect(await resumed.findByText(/Ещё выполняется/)).toBeTruthy()
+  expect(store.fetchCampaigns).not.toHaveBeenCalled()
+  expect(resumed.emitted()['update:visible']).toBeUndefined()
+  await fireEvent.click(check)
+  await waitFor(() => expect(resumed.emitted()['update:visible']).toEqual([[false]]))
+  const calls = store.createCampaign.mock.calls
+  expect(calls).toHaveLength(3)
+  expect(calls[1]).toEqual(calls[0])
+  expect(calls[2]).toEqual(calls[0])
 })
