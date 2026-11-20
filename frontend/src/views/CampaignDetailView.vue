@@ -86,26 +86,36 @@
                 </div>
                 <div v-if="holdsOffers(stream)" class="stream-body">
                   <div class="offer-add">
-                    <form class="offer-add-row" @submit.prevent="searchOffers">
+                    <div class="offer-add-head">
+                      <span class="offer-add-title">Добавить оффер</span>
+                      <button
+                        v-if="!offersLoaded"
+                        class="button button-secondary button-small"
+                        type="button"
+                        :disabled="loadingOffers"
+                        @click="loadOffers()"
+                      >
+                        {{ loadingOffers ? 'Загрузка…' : 'Загрузить офферы' }}
+                      </button>
+                    </div>
+                    <div class="offer-add-row">
                       <input
                         v-model.trim="offerSearchQuery"
                         type="search"
-                        placeholder="Найти оффер по названию или ID"
+                        placeholder="Фильтр по названию или ID"
                         aria-label="Поиск офферов для добавления"
                       />
-                      <button class="button button-secondary button-small" type="submit" :disabled="searchingOffers || !offerSearchQuery">
-                        {{ searchingOffers ? 'Поиск…' : 'Найти' }}
-                      </button>
-                      <select v-model="selectedOfferId" :disabled="addableOffers(stream).length === 0" aria-label="Оффер для добавления">
-                        <option value="">{{ addableOffers(stream).length ? 'Выберите оффер' : (store.offers.length ? 'Все найденные уже добавлены' : 'Сначала найдите офферы') }}</option>
+                      <select v-model="selectedOfferId" :disabled="!addableOffers(stream).length" aria-label="Оффер для добавления">
+                        <option value="">{{ addableOfferPlaceholder(stream) }}</option>
                         <option v-for="item in addableOffers(stream)" :key="item.offer_id" :value="String(item.offer_id)">{{ item.name }} (ID: {{ item.offer_id }})</option>
                       </select>
                       <button class="button button-primary button-small" type="button" :disabled="!selectedOfferId" @click="addOffer(stream.stream_id || stream.id)">
                         <i class="pi pi-plus" aria-hidden="true"></i>Добавить
                       </button>
-                    </form>
+                    </div>
                     <p class="offer-add-hint">Новый оффер добавляется с долей 0%, чтобы не менять текущее распределение.</p>
-                    <p v-if="offerSearchError" class="inline-error">{{ offerSearchError }}</p>
+                    <p v-if="offerError" class="inline-error">{{ offerError }}</p>
+                    <p v-else-if="offersLoaded && !store.offers.length" class="inline-error">Keitaro не вернул доступные офферы.</p>
                   </div>
 
                   <div v-if="(stream.offers || []).length" class="table-scroll">
@@ -222,8 +232,6 @@ const savingCampaign = ref(false)
 const saving = ref(false)
 const saveError = ref('')
 const offerSearchQuery = ref('')
-const offerSearchError = ref('')
-const searchingOffers = ref(false)
 const selectedOfferId = ref('')
 const draftCountries = ref<string[]>([])
 const savedCountries = ref<string[]>([])
@@ -296,9 +304,28 @@ const saveCountries = async () => {
   }
 }
 
-// В Keitaro поток хранит офферы, если его схема — landings (тип forced у нас всегда редирект).
-const holdsOffers = (stream: any) => stream.type !== 'forced' && (!stream.schema || stream.schema === 'landings')
-const isRedirectStream = (stream: any) => stream.type === 'forced' || stream.schema === 'redirect'
+// Содержимое потока определяет схема (landings — офферы, redirect — редирект),
+// тип — только приоритет: forced → regular → default. Бэкенд нормализует schema,
+// но если поле пришло в неизвестном виде, поток не должен оставаться без управления офферами.
+const schemaOf = (stream: any): string => {
+  const raw = stream?.schema
+  if (typeof raw === 'string') return raw.toLowerCase()
+  if (raw && typeof raw === 'object') {
+    const nested = raw.value ?? raw.name ?? raw.slug ?? raw.id ?? raw.type
+    return typeof nested === 'string' ? nested.toLowerCase() : ''
+  }
+  return ''
+}
+const isRedirectSchema = (stream: any) => schemaOf(stream).includes('redirect')
+const isLandingsSchema = (stream: any) => schemaOf(stream).includes('landing') || schemaOf(stream).includes('offer')
+const holdsOffers = (stream: any) => {
+  if (isRedirectSchema(stream)) return false
+  if (isLandingsSchema(stream)) return true
+  // Схема неизвестна/не пришла: ориентируемся на тип, но перехватывающий без redirect-схемы
+  // тоже может содержать офферы — тогда показываем управление ими.
+  return stream.type !== 'forced'
+}
+const isRedirectStream = (stream: any) => !holdsOffers(stream) && (stream.type === 'forced' || isRedirectSchema(stream))
 const STREAM_TYPE_LABELS: Record<string, string> = {
   forced: 'Перехватывающий',
   regular: 'Обычный',
@@ -312,24 +339,45 @@ const describeFilters = (stream: any) => {
   return filters.map((filter: any) => `${filter.name}: ${(filter.payload || []).join(', ')}`).join('; ')
 }
 
-const searchOffers = async () => {
-  if (!offerSearchQuery.value) return
-  searchingOffers.value = true
-  offerSearchError.value = ''
-  selectedOfferId.value = ''
+const offersLoaded = ref(false)
+const loadingOffers = ref(false)
+const offerError = ref('')
+
+// Список офферов грузим сразу, чтобы добавление было доступно без обязательного поиска.
+const loadOffers = async () => {
+  if (loadingOffers.value) return
+  loadingOffers.value = true
+  offerError.value = ''
   try {
-    await store.fetchOffers(offerSearchQuery.value)
-    if (store.offers.length === 0) offerSearchError.value = 'Офферы не найдены.'
+    await store.fetchOffers()
+    offersLoaded.value = true
   } catch (error: any) {
-    offerSearchError.value = error?.response?.data?.detail || 'Не удалось загрузить офферы.'
+    offerError.value = error?.response?.data?.detail || 'Не удалось загрузить офферы.'
   } finally {
-    searchingOffers.value = false
+    loadingOffers.value = false
   }
+}
+
+const matchesOfferQuery = (offer: any, query: string) => {
+  if (!query) return true
+  const normalized = query.toLowerCase()
+  return String(offer.name || '').toLowerCase().includes(normalized)
+    || String(offer.offer_id) === normalized
 }
 
 const addableOffers = (stream: any) => store.offers.filter((candidate: any) =>
   !(stream.offers || []).some((offer: any) => Number(offer.offer_id) === Number(candidate.offer_id))
+  && matchesOfferQuery(candidate, offerSearchQuery.value.trim())
 )
+
+const addableOfferPlaceholder = (stream: any) => {
+  if (!offersLoaded.value) return 'Загружаем офферы…'
+  if (!store.offers.length) return 'Keitaro не вернул офферы'
+  if (!addableOffers(stream).length) {
+    return offerSearchQuery.value.trim() ? 'Ничего не найдено по фильтру' : 'Все офферы уже добавлены'
+  }
+  return 'Выберите оффер'
+}
 
 const addOffer = (streamId: number) => {
   const stream = campaign.value?.streams?.find((item: any) => Number(item.stream_id || item.id) === Number(streamId))
@@ -428,6 +476,7 @@ const saveAll = async () => {
 
 onMounted(() => {
   fetchDetail()
+  loadOffers()
   store.fetchReferences().then(data => { references.value = data }).catch(() => {})
 })
 </script>

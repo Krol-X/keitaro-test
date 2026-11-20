@@ -505,3 +505,38 @@ def test_update_offers_reports_offer_missing_after_update(mock_update_stream, mo
 
     assert response.status_code == 502
     assert "did not store offers [9]" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("landings", "landings"),
+    ("Landings", "landings"),
+    ("landings_schema", "landings"),
+    ({"value": "landings"}, "landings"),
+    ({"name": "redirect"}, "redirect"),
+    ("offers", "landings"),
+    ("redirect", "redirect"),
+    (None, None),
+    ("", None),
+])
+def test_normalize_schema_reduces_known_shapes(raw, expected):
+    from app.routers.campaigns import normalize_schema
+
+    assert normalize_schema(raw) == expected
+
+
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+def test_campaign_detail_normalizes_nested_schema(mock_list_streams, mock_get_campaign):
+    """Keitaro может вернуть schema вложенным объектом — UI должен получить строку."""
+    mock_get_campaign.return_value = {"id": 50, "name": "Test", "state": "active"}
+    mock_list_streams.return_value = [
+        {"id": 201, "type": "forced", "position": 1, "schema": {"value": "redirect"}},
+        {"id": 202, "type": "default", "position": 2, "schema": {"value": "landings"}, "offers": []},
+    ]
+
+    response = client.get("/api/v1/campaigns/50")
+
+    assert response.status_code == 200
+    forced, default = response.json()["streams"]
+    assert forced["schema"] == "redirect"
+    assert default["schema"] == "landings"
