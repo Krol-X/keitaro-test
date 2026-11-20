@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import engine, Base, SessionLocal
@@ -92,10 +93,15 @@ def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_stream):
-    mock_get_stream.return_value = {
-        "id": 12, "campaign_id": 50,
+    original = {
+        "id": 12, "campaign_id": 50, "name": "Offers", "position": 2, "type": "default", "schema": "landings",
         "offers": [{"offer_id": 8, "share": 35, "state": "active"}]
     }
+    # Второй вызов — сверка после PUT, оффер уже с новой долей.
+    mock_get_stream.side_effect = [
+        original,
+        {**original, "offers": [{"offer_id": 8, "share": 45, "state": "active"}]},
+    ]
     mock_update_stream.return_value = {"offers": [{"offer_id": 8, "share": 45, "state": "active"}]}
 
     response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
@@ -116,12 +122,17 @@ def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_s
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 def test_add_offer_to_existing_stream(mock_get_stream, mock_update_stream, mock_list_offers):
-    mock_get_stream.return_value = {
-        "id": 12, "campaign_id": 50,
+    original = {
+        "id": 12, "campaign_id": 50, "name": "Offers", "position": 2, "type": "default", "schema": "landings",
         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
     }
+    updated = {
+        **original,
+        "offers": [{"offer_id": 8, "share": 50, "state": "active"}, {"offer_id": 9, "share": 50, "state": "active"}],
+    }
+    mock_get_stream.side_effect = [original, updated]
     mock_list_offers.return_value = [{"id": 9, "name": "New offer"}]
-    mock_update_stream.return_value = {"offers": []}
+    mock_update_stream.return_value = updated
 
     response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
         "offers": [
@@ -409,3 +420,88 @@ def test_create_campaign_skips_extra_put_when_filters_applied(
 
     assert response.status_code == 201
     mock_update_stream.assert_not_awaited()
+
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_update_offers_sends_flow_identity_with_offers(mock_update_stream, mock_get_stream):
+    """PUT /streams/{id} — полноценный документ потока, иначе Keitaro теряет схему и поток исчезает."""
+    stream = {
+        "id": 12, "campaign_id": 50, "name": "Offers", "position": 2,
+        "type": "default", "schema": "landings", "state": "active",
+        "filters": [{"id": 7, "name": "country", "mode": "accept", "payload": ["PL"]}],
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}],
+    }
+    mock_get_stream.side_effect = [
+        stream,
+        {**stream, "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
+    ]
+    mock_update_stream.return_value = {}
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
+    })
+
+    assert response.status_code == 200
+    sent = mock_update_stream.call_args.args[1]
+    assert sent["name"] == "Offers"
+    assert sent["position"] == 2
+    assert sent["type"] == "default"
+    assert sent["schema"] == "landings"
+    assert sent["state"] == "active"
+    # Гео-фильтр и прочие поля потока не должны слетать при сохранении офферов.
+    assert sent["filters"] == [{"id": 7, "name": "country", "mode": "accept", "payload": ["PL"]}]
+    assert [offer["offer_id"] for offer in sent["offers"]] == [8]
+
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_update_offers_rejects_flow_without_active_offers(mock_update_stream, mock_get_stream):
+    mock_get_stream.return_value = {
+        "id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}],
+    }
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 0, "state": "disabled"}]
+    })
+
+    assert response.status_code == 409
+    mock_update_stream.assert_not_awaited()
+
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_update_offers_reports_flow_that_disappeared_after_update(mock_update_stream, mock_get_stream):
+    mock_get_stream.side_effect = [
+        {"id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
+         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
+        HTTPException(status_code=404, detail="Keitaro resource not found"),
+    ]
+    mock_update_stream.return_value = {}
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
+    })
+
+    assert response.status_code == 502
+    assert "no longer returns flow 12" in response.json()["detail"]
+
+
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+def test_update_offers_reports_offer_missing_after_update(mock_update_stream, mock_get_stream, mock_list_offers):
+    mock_list_offers.return_value = [{"id": 8, "name": "A"}, {"id": 9, "name": "B"}]
+    stream = {"id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
+              "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}
+    mock_get_stream.side_effect = [stream, {**stream, "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}]
+    mock_update_stream.return_value = {}
+
+    response = client.put("/api/v1/campaigns/50/streams/12/offers", json={
+        "offers": [{"offer_id": 8, "share": 50, "state": "active"},
+                   {"offer_id": 9, "share": 50, "state": "active"}]
+    })
+
+    assert response.status_code == 502
+    assert "did not store offers [9]" in response.json()["detail"]

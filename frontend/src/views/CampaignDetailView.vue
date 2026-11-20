@@ -57,7 +57,7 @@
               <h2>Потоки и офферы</h2>
               <p class="panel-subtitle">Доли и блокировки офферов сохраняются отдельно от настроек кампании.</p>
             </div>
-            <button class="button button-primary button-small" type="button" :disabled="!hasChanges || saving" @click="saveAll">
+            <button class="button button-primary button-small" type="button" :disabled="!changedStreams.length || saving" @click="saveAll">
               {{ saving ? 'Сохранение…' : 'Сохранить офферы' }}
             </button>
           </div>
@@ -134,7 +134,6 @@
                                 step="1"
                                 :disabled="offer.share_locked"
                                 :aria-label="`Доля оффера ${offer.offer_id} в процентах`"
-                                @input="hasChanges = true"
                               />
                               <span class="share-suffix">%</span>
                               <button
@@ -220,7 +219,6 @@ const campaignChanged = computed(() => Boolean(campaign.value && (
   draft.trafficSourceId !== String(campaign.value.traffic_source_id ?? '')
 )))
 const savingCampaign = ref(false)
-const hasChanges = ref(false)
 const saving = ref(false)
 const saveError = ref('')
 const offerSearchQuery = ref('')
@@ -247,6 +245,7 @@ const collectSavedCountries = (campaignData: any) => {
 const fetchDetail = async () => {
   try {
     campaign.value = await store.getCampaignDetail(Number(route.params.id))
+    rememberSnapshots()
     draft.name = campaign.value.name || ''
     draft.state = campaign.value.state || 'disabled'
     draft.domainId = String(campaign.value.domain_id ?? '')
@@ -344,7 +343,6 @@ const addOffer = (streamId: number) => {
     share_locked: false
   })
   selectedOfferId.value = ''
-  hasChanges.value = true
 }
 
 const findOffer = (streamId: number, offerId: number) => {
@@ -356,7 +354,6 @@ const removeOffer = (streamId: number, offerId: number) => {
   const offer = findOffer(streamId, offerId)
   if (offer) {
     offer.state = 'disabled'
-    hasChanges.value = true
   }
 }
 
@@ -364,7 +361,6 @@ const restoreOffer = (streamId: number, offerId: number) => {
   const offer = findOffer(streamId, offerId)
   if (offer) {
     offer.state = 'active'
-    hasChanges.value = true
   }
 }
 
@@ -372,27 +368,56 @@ const toggleOfferLock = (streamId: number, offerId: number) => {
   const offer = findOffer(streamId, offerId)
   if (offer) {
     offer.share_locked = !offer.share_locked
-    hasChanges.value = true
   }
 }
 
+const offerPayload = (stream: any) => (stream.offers || []).map((offer: any) => ({
+  offer_id: offer.offer_id,
+  share: Number(offer.share ?? 0),
+  state: offer.state === 'disabled' ? 'disabled' : 'active',
+  share_locked: Boolean(offer.share_locked)
+}))
+
+// Сравнение с последним сохранённым состоянием потока, чтобы не гонять PUT по всем потокам подряд.
+const snapshot = (offers: any[]) => JSON.stringify(
+  offers.map((offer: any) => [Number(offer.offer_id), Number(offer.share ?? 0), offer.state === 'disabled' ? 'disabled' : 'active'])
+    .sort((a, b) => a[0] - b[0])
+)
+const savedSnapshots = ref<Record<number, string>>({})
+
+const rememberSnapshots = () => {
+  const snapshots: Record<number, string> = {}
+  for (const stream of campaign.value?.streams || []) {
+    if (!holdsOffers(stream)) continue
+    snapshots[Number(stream.stream_id || stream.id)] = snapshot(stream.offers || [])
+  }
+  savedSnapshots.value = snapshots
+}
+
+const changedStreams = computed(() => (campaign.value?.streams || []).filter((stream: any) => {
+  if (!holdsOffers(stream)) return false
+  const id = Number(stream.stream_id || stream.id)
+  return savedSnapshots.value[id] !== snapshot(stream.offers || [])
+}))
+
 const saveAll = async () => {
   if (!campaign.value || saving.value) return
+  const streams = changedStreams.value
+  if (!streams.length) return
   saving.value = true
   saveError.value = ''
   try {
-    for (const stream of campaign.value.streams || []) {
-      if (!holdsOffers(stream)) continue
+    for (const stream of streams) {
+      // Пустой список активных офферов Keitaro превращает в поток без схемы — он пропадает из кампании.
+      const active = (stream.offers || []).filter((offer: any) => offer.state !== 'disabled')
+      if (!active.length) {
+        saveError.value = `В потоке «${stream.name || stream.stream_id}» должен остаться хотя бы один активный оффер. Чтобы убрать поток, выключите его.`
+        return
+      }
       await store.updateStreamOffers(campaign.value.campaign_id, stream.stream_id || stream.id, {
-        offers: (stream.offers || []).map((offer: any) => ({
-          offer_id: offer.offer_id,
-          share: Number(offer.share ?? 0),
-          state: offer.state === 'disabled' ? 'disabled' : 'active',
-          share_locked: Boolean(offer.share_locked)
-        }))
+        offers: offerPayload(stream)
       })
     }
-    hasChanges.value = false
     await fetchDetail()
   } catch (error: any) {
     saveError.value = error?.response?.data?.detail || 'Не удалось сохранить изменения офферов.'

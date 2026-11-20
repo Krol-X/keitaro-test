@@ -215,6 +215,28 @@ async def ensure_stream_filters(stream: Optional[Dict[str, Any]], filters: List[
     await keitaro.update_stream(int(stream_id), {"filters": filters})
 
 
+def stream_identity_fields(stream: Dict[str, Any]) -> Dict[str, Any]:
+    """Keitaro treats PUT /streams/{id} as a full flow document.
+
+    Our own integration notes (docs/backend-notes.md) record name/position/type/schema
+    as required for that call. Sending offers alone can strip the flow of its schema,
+    and a landings flow without a schema drops out of the campaign — the flow seems to
+    disappear instead of keeping the disabled offer. Always send the identity along.
+    """
+    identity: Dict[str, Any] = {}
+    # Поля уровня потока, которые Keitaro принимает в PUT и которые нельзя терять:
+    # без schema поток выпадает из кампании, без filters слетает гео-фильтр.
+    for field in (
+        "name", "position", "type", "schema", "state", "action_type", "action_payload",
+        "collect_clicks", "filter_or", "filters", "comments", "weight", "action_options",
+    ):
+        if field in stream:
+            value = stream[field]
+            if value is not None or field in {"filters"}:
+                identity[field] = value
+    return identity
+
+
 async def resolve_country_filter_name() -> str:
     stream_filters = response_items(await keitaro.list_stream_filters())
     country_filter = next(
@@ -563,10 +585,44 @@ async def update_stream_offers(
             if submitted_offer.share != current_share and submitted_offer.share_locked is not False:
                 raise HTTPException(status_code=409, detail=f"Offer {lock.offer_id} share is locked; unlock it before changing the percentage")
 
+        # Поток без активных офферов Keitaro превращает в пустую схему landings,
+        # и такой поток пропадает из кампании вместо того, чтобы остаться с архивным оффером.
+        if not any(offer.state == "active" for offer in request.offers):
+            raise HTTPException(
+                status_code=409,
+                detail="Flow must keep at least one active offer; disable the flow itself instead of every offer",
+            )
+
         keitaro_update = {
-            "offers": [offer.dict(exclude={"share_locked"}) for offer in request.offers]
+            **stream_identity_fields(stream),
+            "offers": [offer.dict(exclude={"share_locked"}) for offer in request.offers],
         }
         updated_stream = await keitaro.update_stream(stream_id, keitaro_update)
+
+        # PUT со списком офферов заменяет его целиком, поэтому сверяем результат:
+        # если Keitaro потерял поток или оффер, пользователь должен увидеть это сразу.
+        try:
+            confirmed_stream = await keitaro.get_stream(stream_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Keitaro no longer returns flow {stream_id} after the update; open the campaign in Keitaro",
+                )
+            raise
+        confirmed_ids = {
+            int(item.get("offer_id"))
+            for item in confirmed_stream.get("offers") or []
+            if item.get("offer_id") is not None
+        }
+        missing_ids = sorted(
+            offer.offer_id for offer in request.offers if offer.offer_id not in confirmed_ids
+        )
+        if missing_ids:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Keitaro did not store offers {missing_ids} in flow {stream_id}",
+            )
 
         for offer in request.offers:
             if offer.share_locked is None:
@@ -589,7 +645,10 @@ async def update_stream_offers(
 
         op.status = "succeeded"
         db.commit()
-        return {"offers": updated_stream.get("offers", [])}
+        return {
+            "offers": confirmed_stream.get("offers") or updated_stream.get("offers", []),
+            "stream": confirmed_stream,
+        }
 
     except HTTPException:
         op.status = "failed"
