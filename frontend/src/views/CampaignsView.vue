@@ -72,23 +72,26 @@
       </div>
     </div>
   </section>
+  <CampaignCreateDialog v-model:visible="showCreateDialog" />
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCampaignStore } from '../stores/campaigns'
+import CampaignCreateDialog from '../components/CampaignCreateDialog.vue'
 
 const store = useCampaignStore()
 const router = useRouter()
 const query = ref('')
 const deletingId = ref<number | null>(null)
+const showCreateDialog = ref(false)
 
 const loadPage = (offset = 0) => store.fetchCampaigns(query.value, 25, offset)
 const search = () => loadPage(0)
 const goToDetail = (id: number) => router.push(`/campaigns/${id}`)
 const stateLabel = (state: string) => state === 'active' ? 'Активна' : 'Выключена'
-const openCreate = () => window.dispatchEvent(new CustomEvent('campaign:create'))
+const openCreate = () => { showCreateDialog.value = true }
 
 const removeCampaign = async (campaign: any) => {
   if (!window.confirm(`Удалить кампанию «${campaign.name}» (ID: ${campaign.campaign_id})? Это действие нельзя отменить.`)) return

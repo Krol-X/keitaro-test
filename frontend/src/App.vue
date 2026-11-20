@@ -12,26 +12,8 @@
       </nav>
       <p class="side-footer">Данные кампаний и потоков синхронизируются с Keitaro.</p>
     </aside>
-    <div class="app-main">
-      <header class="app-header">
-        <span class="workspace-label"><span class="workspace-dot"></span>Рабочее пространство</span>
-        <Button label="Создать кампанию" icon="pi pi-plus" @click="openCreateDialog" severity="success" />
-      </header>
-      <main class="app-content">
-        <router-view />
-      </main>
-    </div>
-    <CampaignCreateDialog v-model:visible="showCreateDialog" />
+    <main class="app-content">
+      <router-view />
+    </main>
   </div>
 </template>
-
-<script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import Button from 'primevue/button'
-import CampaignCreateDialog from './components/CampaignCreateDialog.vue'
-
-const showCreateDialog = ref(false)
-const openCreateDialog = () => { showCreateDialog.value = true }
-onMounted(() => window.addEventListener('campaign:create', openCreateDialog))
-onBeforeUnmount(() => window.removeEventListener('campaign:create', openCreateDialog))
-</script>
