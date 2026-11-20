@@ -1,24 +1,29 @@
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from app.main import app
-from app.database import engine, Base, SessionLocal
+from app.main import create_app
 from app.models import OfferShareLock
 from unittest.mock import patch, AsyncMock
 
-client = TestClient(app)
+MANAGED_REDIRECT = {
+    "type": "forced", "schema": "redirect", "name": "Forced Redirect (Google)",
+    "action_payload": "https://www.google.com/",
+}
 
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    async def no_upstream(*args, **kwargs):
+        pytest.fail("Unexpected Keitaro request in local API test")
+
+    monkeypatch.setattr("app.keitaro_client.KeitaroClient._request", no_upstream)
+    with TestClient(create_app(f"sqlite:///{tmp_path / 'test.db'}")) as client:
+        yield client
 
 @patch("app.routers.campaigns.keitaro.list_traffic_sources")
 @patch("app.routers.campaigns.keitaro.list_groups")
 @patch("app.routers.campaigns.keitaro.list_campaigns")
-def test_list_campaigns(mock_list, mock_groups, mock_sources):
+def test_list_campaigns(mock_list, mock_groups, mock_sources, client):
     mock_groups.return_value = []
     mock_sources.return_value = []
     mock_list.return_value = {
@@ -34,7 +39,7 @@ def test_list_campaigns(mock_list, mock_groups, mock_sources):
 @patch("app.routers.campaigns.keitaro.list_traffic_sources")
 @patch("app.routers.campaigns.keitaro.list_groups")
 @patch("app.routers.campaigns.keitaro.list_campaigns")
-def test_list_campaigns_accepts_keitaro_array_response(mock_list, mock_groups, mock_sources):
+def test_list_campaigns_accepts_keitaro_array_response(mock_list, mock_groups, mock_sources, client):
     mock_groups.return_value = []
     mock_sources.return_value = []
     mock_list.return_value = [
@@ -55,7 +60,7 @@ def test_list_campaigns_accepts_keitaro_array_response(mock_list, mock_groups, m
 @patch("app.routers.campaigns.keitaro.list_traffic_sources")
 @patch("app.routers.campaigns.keitaro.list_groups")
 @patch("app.routers.campaigns.keitaro.list_domains")
-def test_references_include_full_country_list(mock_domains, mock_groups, mock_sources):
+def test_references_include_full_country_list(mock_domains, mock_groups, mock_sources, client):
     mock_domains.return_value = []
     mock_groups.return_value = []
     mock_sources.return_value = []
@@ -71,7 +76,7 @@ def test_references_include_full_country_list(mock_domains, mock_groups, mock_so
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.disable_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_campaign", new_callable=AsyncMock)
-def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get):
+def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get, client):
     mock_update.return_value = {}
     mock_disable.return_value = {}
     mock_get.return_value = {
@@ -92,7 +97,7 @@ def test_update_campaign_metadata_and_state(mock_update, mock_disable, mock_get)
 
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
-def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_stream):
+def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_stream, client):
     original = {
         "id": 12, "campaign_id": 50, "name": "Offers", "position": 2, "type": "default", "schema": "landings",
         "offers": [{"offer_id": 8, "share": 35, "state": "active"}]
@@ -111,7 +116,7 @@ def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_s
     assert response.status_code == 200
     sent_offer = mock_update_stream.call_args.args[1]["offers"][0]
     assert sent_offer == {"offer_id": 8, "share": 45, "state": "active"}
-    db = SessionLocal()
+    db = client.app.state.sessions()
     try:
         lock = db.query(OfferShareLock).filter_by(campaign_id=50, stream_id=12, offer_id=8).one()
         assert lock.share_locked is True
@@ -121,7 +126,7 @@ def test_update_offer_percentage_and_persist_lock(mock_get_stream, mock_update_s
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
-def test_add_offer_to_existing_stream(mock_get_stream, mock_update_stream, mock_list_offers):
+def test_add_offer_to_existing_stream(mock_get_stream, mock_update_stream, mock_list_offers, client):
     original = {
         "id": 12, "campaign_id": 50, "name": "Offers", "position": 2, "type": "default", "schema": "landings",
         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
@@ -149,7 +154,7 @@ def test_add_offer_to_existing_stream(mock_get_stream, mock_update_stream, mock_
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
-def test_reject_adding_unknown_offer(mock_get_stream, mock_update_stream, mock_list_offers):
+def test_reject_adding_unknown_offer(mock_get_stream, mock_update_stream, mock_list_offers, client):
     mock_get_stream.return_value = {
         "id": 12, "campaign_id": 50,
         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]
@@ -168,8 +173,8 @@ def test_reject_adding_unknown_offer(mock_get_stream, mock_update_stream, mock_l
 
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_locked_offer_percentage_cannot_change_without_unlock(mock_update_stream, mock_get_stream):
-    db = SessionLocal()
+def test_locked_offer_percentage_cannot_change_without_unlock(mock_update_stream, mock_get_stream, client):
+    db = client.app.state.sessions()
     db.add(OfferShareLock(campaign_id=50, stream_id=12, offer_id=8, share_locked=True))
     db.commit()
     db.close()
@@ -187,8 +192,8 @@ def test_locked_offer_percentage_cannot_change_without_unlock(mock_update_stream
 
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
-def test_campaign_detail_includes_persisted_offer_lock(mock_get_campaign, mock_list_streams):
-    db = SessionLocal()
+def test_campaign_detail_includes_persisted_offer_lock(mock_get_campaign, mock_list_streams, client):
+    db = client.app.state.sessions()
     db.add(OfferShareLock(campaign_id=50, stream_id=12, offer_id=8, share_locked=True))
     db.commit()
     db.close()
@@ -204,7 +209,7 @@ def test_campaign_detail_includes_persisted_offer_lock(mock_get_campaign, mock_l
     assert response.json()["streams"][0]["offers"][0]["share_locked"] is True
 
 @patch("app.routers.campaigns.keitaro.delete_campaign", new_callable=AsyncMock)
-def test_delete_campaign(mock_delete):
+def test_delete_campaign(mock_delete, client):
     response = client.delete("/api/v1/campaigns/123")
 
     assert response.status_code == 204
@@ -217,7 +222,7 @@ def test_delete_campaign(mock_delete):
 @patch("app.routers.campaigns.keitaro.enable_campaign")
 @patch("app.routers.campaigns.keitaro.get_campaign")
 @patch("app.routers.campaigns.keitaro.list_streams")
-def test_create_campaign(mock_list_streams, mock_get, mock_enable, mock_stream, mock_offers, mock_create, mock_filters):
+def test_create_campaign(mock_list_streams, mock_get, mock_enable, mock_stream, mock_offers, mock_create, mock_filters, client):
     mock_offers.return_value = [{"id": 42, "name": "Offer"}]
     mock_filters.return_value = [{"value": "country", "modes": {"accept": "accept", "reject": "reject"}}]
     mock_create.return_value = {"id": 101, "alias": "cmp_101", "state": "disabled"}
@@ -253,9 +258,9 @@ def test_create_campaign(mock_list_streams, mock_get, mock_enable, mock_stream, 
 
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_update_country_filter_replaces_countries(mock_update_stream, mock_list_streams):
+def test_update_country_filter_replaces_countries(mock_update_stream, mock_list_streams, client):
     mock_list_streams.return_value = [
-        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1,
+        {"id": 201, "campaign_id": 50, **MANAGED_REDIRECT, "position": 1,
          "filters": [{"id": 33, "name": "country", "mode": "accept", "payload": ["PL", "LT"]}]},
         {"id": 202, "campaign_id": 50, "type": "default", "position": 2,
          "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
@@ -277,9 +282,9 @@ def test_update_country_filter_replaces_countries(mock_update_stream, mock_list_
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.enable_stream", new_callable=AsyncMock)
-def test_update_country_filter_reenables_disabled_redirect_stream(mock_enable_stream, mock_update_stream, mock_list_streams):
+def test_update_country_filter_reenables_disabled_redirect_stream(mock_enable_stream, mock_update_stream, mock_list_streams, client):
     mock_list_streams.return_value = [
-        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1, "state": "disabled",
+        {"id": 201, "campaign_id": 50, **MANAGED_REDIRECT, "position": 1, "state": "disabled",
          "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
         {"id": 202, "campaign_id": 50, "type": "default", "position": 2, "offers": []},
     ]
@@ -292,8 +297,10 @@ def test_update_country_filter_reenables_disabled_redirect_stream(mock_enable_st
 
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
-def test_update_country_filter_creates_redirect_stream(mock_list_streams, mock_update_stream):
-    streams = [{"id": 202, "campaign_id": 50, "type": "default", "position": 1,
+def test_update_country_filter_creates_redirect_stream(mock_list_streams, mock_update_stream, client):
+    streams = [{"id": 200, "type": "forced", "schema": "landings", "position": 1,
+                "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
+               {"id": 202, "campaign_id": 50, "type": "default", "position": 1,
                 "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}]
     mock_list_streams.side_effect = [streams, streams]
     created = {}
@@ -311,15 +318,16 @@ def test_update_country_filter_creates_redirect_stream(mock_list_streams, mock_u
     assert created["type"] == "forced"
     assert created["position"] == 1
     assert created["filters"] == [{"name": "country", "mode": "accept", "payload": ["BY"]}]
+    assert mock_update_stream.await_count == 1
     assert mock_update_stream.await_args.args[0] == 202
     assert mock_update_stream.await_args.args[1] == {"position": 2}
 
 
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.disable_stream", new_callable=AsyncMock)
-def test_update_country_filter_clears_filter_when_list_empty(mock_disable_stream, mock_list_streams):
+def test_update_country_filter_clears_filter_when_list_empty(mock_disable_stream, mock_list_streams, client):
     mock_list_streams.return_value = [
-        {"id": 201, "campaign_id": 50, "type": "forced", "position": 1,
+        {"id": 201, "campaign_id": 50, **MANAGED_REDIRECT, "position": 1,
          "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
         {"id": 202, "campaign_id": 50, "type": "default", "position": 2, "offers": []},
     ]
@@ -330,9 +338,15 @@ def test_update_country_filter_clears_filter_when_list_empty(mock_disable_stream
     assert response.json()["excluded_countries"] == []
     assert response.json()["removed"] is True
     mock_disable_stream.assert_awaited_once_with(201)
+    mock_list_streams.return_value[0]["state"] = "disabled"
+    with patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock,
+               return_value={"id": 50, "name": "Test", "state": "active"}):
+        detail = client.get("/api/v1/campaigns/50")
+    assert detail.status_code == 200
+    assert detail.json()["excluded_countries"] == []
 
 
-def test_update_country_filter_rejects_unknown_code():
+def test_update_country_filter_rejects_unknown_code(client):
     response = client.put("/api/v1/campaigns/50/country-filter", json={"excluded_countries": ["ZZ"]})
 
     assert response.status_code == 422
@@ -340,10 +354,10 @@ def test_update_country_filter_rejects_unknown_code():
 
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
-def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_campaign):
+def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_campaign, client):
     mock_get_campaign.return_value = {"id": 50, "name": "Test", "state": "active"}
     mock_list_streams.return_value = [
-        {"id": 201, "type": "forced", "position": 1,
+        {"id": 201, **MANAGED_REDIRECT, "position": 1,
          "filters": [{"id": 33, "name": "country", "mode": "accept", "payload": ["PL", "LT"]}]},
         {"id": 202, "type": "default", "position": 2, "offers": []},
     ]
@@ -351,6 +365,7 @@ def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_camp
     response = client.get("/api/v1/campaigns/50")
 
     assert response.status_code == 200
+    assert response.json()["excluded_countries"] == ["LT", "PL"]
     forced, default = response.json()["streams"]
     assert forced["country_filter"] == {"name": "country", "mode": "accept", "countries": ["LT", "PL"]}
     assert default["country_filter"] is None
@@ -365,8 +380,7 @@ def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_camp
 @patch("app.routers.campaigns.keitaro.update_stream")
 def test_create_campaign_writes_filters_when_creation_drops_them(
     mock_update_stream, mock_create_campaign, mock_offers, mock_create_stream,
-    mock_enable, mock_get_campaign, mock_list_streams, mock_filters
-):
+    mock_enable, mock_get_campaign, mock_list_streams, mock_filters, client):
     mock_offers.return_value = [{"id": 42, "name": "Offer"}]
     mock_filters.return_value = [{"value": "country", "modes": {"accept": "accept", "reject": "reject"}}]
     mock_create_campaign.return_value = {"id": 101, "alias": "cmp_101", "state": "disabled"}
@@ -399,8 +413,7 @@ def test_create_campaign_writes_filters_when_creation_drops_them(
 @patch("app.routers.campaigns.keitaro.update_stream")
 def test_create_campaign_skips_extra_put_when_filters_applied(
     mock_update_stream, mock_create_campaign, mock_offers, mock_create_stream,
-    mock_enable, mock_get_campaign, mock_list_streams, mock_filters
-):
+    mock_enable, mock_get_campaign, mock_list_streams, mock_filters, client):
     mock_offers.return_value = [{"id": 42, "name": "Offer"}]
     mock_filters.return_value = [{"value": "country", "modes": {"accept": "accept", "reject": "reject"}}]
     mock_create_campaign.return_value = {"id": 102, "alias": "cmp_102", "state": "disabled"}
@@ -424,7 +437,7 @@ def test_create_campaign_skips_extra_put_when_filters_applied(
 
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_update_offers_sends_flow_identity_with_offers(mock_update_stream, mock_get_stream):
+def test_update_offers_sends_flow_identity_with_offers(mock_update_stream, mock_get_stream, client):
     """PUT /streams/{id} — полноценный документ потока, иначе Keitaro теряет схему и поток исчезает."""
     stream = {
         "id": 12, "campaign_id": 50, "name": "Offers", "position": 2,
@@ -456,7 +469,7 @@ def test_update_offers_sends_flow_identity_with_offers(mock_update_stream, mock_
 
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_update_offers_rejects_flow_without_active_offers(mock_update_stream, mock_get_stream):
+def test_update_offers_rejects_flow_without_active_offers(mock_update_stream, mock_get_stream, client):
     mock_get_stream.return_value = {
         "id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
         "offers": [{"offer_id": 8, "share": 100, "state": "active"}],
@@ -472,7 +485,7 @@ def test_update_offers_rejects_flow_without_active_offers(mock_update_stream, mo
 
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_update_offers_reports_flow_that_disappeared_after_update(mock_update_stream, mock_get_stream):
+def test_update_offers_reports_flow_that_disappeared_after_update(mock_update_stream, mock_get_stream, client):
     mock_get_stream.side_effect = [
         {"id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
          "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
@@ -491,7 +504,7 @@ def test_update_offers_reports_flow_that_disappeared_after_update(mock_update_st
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
-def test_update_offers_reports_offer_missing_after_update(mock_update_stream, mock_get_stream, mock_list_offers):
+def test_update_offers_reports_offer_missing_after_update(mock_update_stream, mock_get_stream, mock_list_offers, client):
     mock_list_offers.return_value = [{"id": 8, "name": "A"}, {"id": 9, "name": "B"}]
     stream = {"id": 12, "campaign_id": 50, "type": "default", "schema": "landings",
               "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}
@@ -526,7 +539,7 @@ def test_normalize_schema_reduces_known_shapes(raw, expected):
 
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
-def test_campaign_detail_normalizes_nested_schema(mock_list_streams, mock_get_campaign):
+def test_campaign_detail_normalizes_nested_schema(mock_list_streams, mock_get_campaign, client):
     """Keitaro может вернуть schema вложенным объектом — UI должен получить строку."""
     mock_get_campaign.return_value = {"id": 50, "name": "Test", "state": "active"}
     mock_list_streams.return_value = [
@@ -548,8 +561,7 @@ def test_campaign_detail_normalizes_nested_schema(mock_list_streams, mock_get_ca
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 def test_create_stream_adds_landings_flow_with_offers_and_shifts_positions(
-    mock_list_offers, mock_list_streams, mock_update_stream, mock_create_stream, mock_get_stream
-):
+    mock_list_offers, mock_list_streams, mock_update_stream, mock_create_stream, mock_get_stream, client):
     """Кампания только с перехватывающим потоком: новый поток с офферами встаёт перед замыкающим."""
     mock_list_offers.return_value = [{"id": 8, "name": "A"}, {"id": 9, "name": "B"}, {"id": 10, "name": "C"}]
     mock_list_streams.return_value = [
@@ -595,7 +607,7 @@ def test_create_stream_adds_landings_flow_with_offers_and_shifts_positions(
 @patch("app.routers.campaigns.keitaro.create_stream", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
-def test_create_stream_rejects_unknown_offer(mock_list_offers, mock_list_streams, mock_create_stream):
+def test_create_stream_rejects_unknown_offer(mock_list_offers, mock_list_streams, mock_create_stream, client):
     mock_list_offers.return_value = [{"id": 8, "name": "A"}]
     mock_list_streams.return_value = [{"id": 201, "type": "forced", "position": 1, "schema": "redirect"}]
 
@@ -606,7 +618,7 @@ def test_create_stream_rejects_unknown_offer(mock_list_offers, mock_list_streams
     mock_create_stream.assert_not_awaited()
 
 
-def test_create_stream_requires_offers_and_landings_type():
+def test_create_stream_requires_offers_and_landings_type(client):
     without_offers = client.post("/api/v1/campaigns/50/streams", json={"type": "regular"})
     assert without_offers.status_code == 422
 
@@ -623,8 +635,7 @@ def test_create_stream_requires_offers_and_landings_type():
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 def test_create_stream_reapplies_offers_when_creation_drops_them(
-    mock_list_offers, mock_list_streams, mock_create_stream, mock_update_stream, mock_get_stream
-):
+    mock_list_offers, mock_list_streams, mock_create_stream, mock_update_stream, mock_get_stream, client):
     """POST /streams может вернуть поток без offers — их нужно досоздать через PUT с identity потока."""
     mock_list_offers.return_value = [{"id": 8, "name": "A"}]
     mock_list_streams.return_value = [{"id": 201, "type": "forced", "position": 1, "schema": "redirect"}]
@@ -653,7 +664,7 @@ def test_create_stream_reapplies_offers_when_creation_drops_them(
 @patch("app.routers.campaigns.keitaro.list_deleted_campaigns", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.create_campaign", new_callable=AsyncMock)
-def test_create_campaign_reports_name_reserved_by_archive(mock_create_campaign, mock_offers, mock_deleted):
+def test_create_campaign_reports_name_reserved_by_archive(mock_create_campaign, mock_offers, mock_deleted, client):
     """DELETE в Keitaro — это архив: имя остаётся занятым, и создание падает с 409."""
     from fastapi import HTTPException
 
@@ -685,7 +696,7 @@ def test_create_campaign_reports_name_reserved_by_archive(mock_create_campaign, 
 @patch("app.routers.campaigns.keitaro.list_deleted_campaigns", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.create_campaign", new_callable=AsyncMock)
-def test_create_campaign_keeps_other_upstream_errors_as_502(mock_create_campaign, mock_offers, mock_deleted):
+def test_create_campaign_keeps_other_upstream_errors_as_502(mock_create_campaign, mock_offers, mock_deleted, client):
     from fastapi import HTTPException
 
     mock_offers.return_value = [{"id": 42, "name": "Offer"}]
@@ -704,7 +715,7 @@ def test_create_campaign_keeps_other_upstream_errors_as_502(mock_create_campaign
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.restore_campaign", new_callable=AsyncMock)
-def test_restore_campaign_returns_streams(mock_restore, mock_get_campaign, mock_list_streams):
+def test_restore_campaign_returns_streams(mock_restore, mock_get_campaign, mock_list_streams, client):
     mock_restore.return_value = {}
     mock_get_campaign.return_value = {"id": 77, "name": "Летняя акция", "state": "active"}
     mock_list_streams.return_value = [
@@ -727,7 +738,7 @@ def test_restore_campaign_returns_streams(mock_restore, mock_get_campaign, mock_
 @patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
 @patch("app.routers.campaigns.keitaro.restore_campaign", new_callable=AsyncMock)
-def test_restore_campaign_enables_disabled_campaign(mock_restore, mock_get_campaign, mock_list_streams, mock_enable):
+def test_restore_campaign_enables_disabled_campaign(mock_restore, mock_get_campaign, mock_list_streams, mock_enable, client):
     """Keitaro восстанавливает кампанию выключенной — включаем, иначе трафик не пойдёт."""
     mock_restore.return_value = {}
     mock_get_campaign.side_effect = [
@@ -742,3 +753,81 @@ def test_restore_campaign_enables_disabled_campaign(mock_restore, mock_get_campa
     assert response.status_code == 200
     mock_enable.assert_awaited_once_with(77)
     assert response.json()["state"] == "active"
+
+
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock, return_value=[])
+def test_create_campaign_rejects_unknown_offer(mock_offers, client):
+    response = client.post("/api/v1/campaigns", headers={"Idempotency-Key": "missing-offer"},
+                           json={"name": "Test", "offer_id": 42, "excluded_countries": []})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Offer not found"
+
+
+@pytest.mark.parametrize('lost_response', ['create', 'enable', 'final_read'])
+def test_create_retry_after_timeout_never_repeats_writes(client, monkeypatch, lost_response):
+    from app.routers.campaigns import keitaro
+    from app.models import Operation
+
+    campaign = {"id": 101, "name": "Test", "state": "active"}
+    timeout = HTTPException(status_code=504, detail="Keitaro timeout")
+    create = AsyncMock(return_value=campaign, side_effect=timeout if lost_response == 'create' else None)
+    enable = AsyncMock(side_effect=timeout if lost_response == 'enable' else None)
+    stream = AsyncMock(return_value={"id": 202})
+    for name, mock in {
+        'list_offers': AsyncMock(return_value=[{"id": 8}]), 'create_campaign': create,
+        'enable_campaign': enable, 'create_stream': stream, 'list_streams': AsyncMock(return_value=[]),
+        'get_campaign': AsyncMock(return_value=campaign, side_effect=[timeout, campaign] if lost_response == 'final_read' else None),
+    }.items():
+        monkeypatch.setattr(keitaro, name, mock)
+
+    url = '/api/v1/campaigns'
+    headers = {'Idempotency-Key': 'retry-test'}
+    payload = {'name': 'Test', 'excluded_countries': [], 'offer_id': 8}
+    assert client.post(url, headers=headers, json=payload).status_code == 504
+    with client.app.state.sessions() as db:
+        op = db.query(Operation).one()
+        assert op.status == ('succeeded' if lost_response == 'final_read' else 'unknown')
+    if lost_response == 'create':
+        alias = create.await_args.args[0]['alias']
+        monkeypatch.setattr(keitaro, 'list_campaigns', AsyncMock(return_value=[{**campaign, 'alias': alias}]))
+    replay = client.post(url, headers=headers, json=payload)
+    assert replay.status_code == 200
+    assert replay.json()['campaign_id'] == 101
+    if lost_response == 'create':
+        assert replay.json()['status'] == 'unknown'  # discovered campaign, not completed setup
+    else:
+        assert replay.json()['state'] == 'active'
+    assert client.post(url, headers=headers, json={**payload, 'name': 'Other'}).status_code == 409
+    create.assert_awaited_once()
+    assert stream.await_count == enable.await_count == (0 if lost_response == 'create' else 1)
+
+
+def test_inflight_create_returns_original_operation(client, monkeypatch):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from app.routers.campaigns import keitaro
+
+    entered, release = Event(), Event()
+
+    async def hold_validation():
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        return []
+
+    monkeypatch.setattr(keitaro, 'list_offers', hold_validation)
+    params = dict(headers={'Idempotency-Key': 'in-flight'}, json={
+        'name': 'Concurrent', 'excluded_countries': [], 'offer_id': 8,
+    })
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, '/api/v1/campaigns', **params)
+        try:
+            assert entered.wait(5)
+            other = client.post('/api/v1/campaigns', **params)
+            assert other.status_code == 202
+            assert other.json()['status'] == 'running'
+        finally:
+            release.set()
+        assert first.result().status_code == 422
+    status = client.get('/api/v1/operations/' + other.json()['operation_id']).json()
+    assert status['status'] == 'failed'

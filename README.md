@@ -127,6 +127,8 @@ docker run --rm -p 8080:80 \
 
 ## Тесты
 
+Backend-тесты используют отдельную временную SQLite-БД для каждого теста независимо от `DATABASE_URL`; доступ к живому Keitaro им не требуется.
+
 ```bash
 # backend
 cd backend

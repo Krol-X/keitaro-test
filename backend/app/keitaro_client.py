@@ -26,6 +26,8 @@ class KeitaroClient:
                 return response.json()
             except httpx.TimeoutException:
                 raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Keitaro timeout")
+            except httpx.RequestError as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Keitaro connection error") from exc
             except httpx.HTTPStatusError as e:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Keitaro error: {e.response.text}")
 
