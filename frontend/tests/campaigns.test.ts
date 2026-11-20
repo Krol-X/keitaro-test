@@ -31,10 +31,13 @@ const renderView = async () => {
 }
 
 describe('CampaignsView', () => {
-  it('renders the campaigns list heading', async () => {
-    const { getByRole } = await renderView()
+  it('renders only the campaigns heading without marketing copy', async () => {
+    const { getByRole, queryByText, container } = await renderView()
 
     expect(getByRole('heading', { name: 'Кампании' })).toBeTruthy()
+    expect(container.querySelectorAll('h1')).toHaveLength(1)
+    expect(queryByText('Управление трафиком')).toBeNull()
+    expect(queryByText('Создавайте кампании и следите за их состоянием в одном месте.')).toBeNull()
   })
 
   it('opens the create-campaign dialog from the page button', async () => {

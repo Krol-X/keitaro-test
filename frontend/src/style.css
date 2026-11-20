@@ -36,10 +36,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #35b77a; }
 .app-content { width: 100%; max-width: 1280px; margin: 0 auto; padding: 28px clamp(18px, 3vw, 34px) 64px; }
 .page-shell { width: 100%; }
-.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
-.page-heading h1 { margin: 4px 0 7px; color: #172b4d; font-size: clamp(27px, 3vw, 34px); line-height: 1.15; letter-spacing: -.04em; }
-.eyebrow { margin: 0; color: #6482a8; font-size: 10px; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
-.page-description { margin: 0; color: #718096; font-size: 14px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+.page-heading h1 { margin: 0; color: #172b4d; font-size: clamp(24px, 2.6vw, 30px); line-height: 1.15; letter-spacing: -.035em; }
 .button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; border: 1px solid transparent; border-radius: 9px; font-size: 13px; font-weight: 650; transition: background .16s, border-color .16s, transform .16s; white-space: nowrap; }
 .button:not(:disabled):active { transform: translateY(1px); }
 .button-primary { color: #fff; background: #2478ee; box-shadow: 0 4px 10px #2478ee24; }
@@ -165,9 +163,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .side-nav { display: flex; }
   .side-footer { display: none; }
   .app-content { width: min(100% - 32px, 1180px); padding: 27px 0 50px; }
-  .page-heading { align-items: flex-start; margin-bottom: 23px; }
+  .page-heading { align-items: flex-start; margin-bottom: 18px; }
   .page-heading .button { min-height: 38px; padding-inline: 11px; font-size: 12px; }
-  .page-description { max-width: 300px; font-size: 12px; line-height: 1.5; }
   .list-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }
   .search-form { width: 100%; }
   .result-count { align-self: flex-end; font-size: 11px; }
