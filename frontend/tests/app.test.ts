@@ -1,22 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { fireEvent, render } from '@testing-library/vue'
+import { describe, it, expect, afterEach } from 'vitest'
+import { render, cleanup } from '@testing-library/vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import App from '../src/App.vue'
 
-const storeActions = vi.hoisted(() => ({
-  fetchReferences: vi.fn(async () => ({
-    domains: [], groups: [], traffic_sources: [], countries: [], defaults: {}
-  })),
-  fetchOffers: vi.fn(async () => [])
-}))
+afterEach(cleanup)
 
-vi.mock('../src/stores/campaigns', () => ({
-  useCampaignStore: () => storeActions
-}))
-
-describe('App campaign creation', () => {
-  it('opens the create-campaign form from the header button', async () => {
+describe('App shell', () => {
+  it('renders the sidebar and no duplicate top bar', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: '/', component: { template: '<div />' } }]
@@ -24,23 +15,15 @@ describe('App campaign creation', () => {
     await router.push('/')
     await router.isReady()
 
-    const { getByRole, findByRole } = render(App, {
+    const { container, queryByText } = render(App, {
       global: {
         plugins: [router],
-        stubs: {
-          'router-view': true,
-          Button: {
-            props: ['label'],
-            emits: ['click'],
-            template: '<button @click="$emit(\'click\')">{{ label }}</button>'
-          }
-        }
+        stubs: { 'router-view': true }
       }
     })
 
-    await fireEvent.click(getByRole('button', { name: 'Создать кампанию' }))
-    expect(await findByRole('dialog')).toBeTruthy()
-    expect(storeActions.fetchReferences).toHaveBeenCalledOnce()
-    expect(storeActions.fetchOffers).toHaveBeenCalledOnce()
+    expect(container.querySelector('header')).toBeNull()
+    expect(queryByText('Рабочее пространство')).toBeNull()
+    expect(container.querySelector('.app-sidebar')).toBeTruthy()
   })
 })
