@@ -343,3 +343,69 @@ def test_campaign_detail_exposes_country_filter(mock_list_streams, mock_get_camp
     forced, default = response.json()["streams"]
     assert forced["country_filter"] == {"name": "country", "mode": "accept", "countries": ["LT", "PL"]}
     assert default["country_filter"] is None
+
+@patch("app.routers.campaigns.keitaro.list_stream_filters")
+@patch("app.routers.campaigns.keitaro.list_streams")
+@patch("app.routers.campaigns.keitaro.get_campaign")
+@patch("app.routers.campaigns.keitaro.enable_campaign")
+@patch("app.routers.campaigns.keitaro.create_stream")
+@patch("app.routers.campaigns.keitaro.list_offers")
+@patch("app.routers.campaigns.keitaro.create_campaign")
+@patch("app.routers.campaigns.keitaro.update_stream")
+def test_create_campaign_writes_filters_when_creation_drops_them(
+    mock_update_stream, mock_create_campaign, mock_offers, mock_create_stream,
+    mock_enable, mock_get_campaign, mock_list_streams, mock_filters
+):
+    mock_offers.return_value = [{"id": 42, "name": "Offer"}]
+    mock_filters.return_value = [{"value": "country", "modes": {"accept": "accept", "reject": "reject"}}]
+    mock_create_campaign.return_value = {"id": 101, "alias": "cmp_101", "state": "disabled"}
+    # Keitaro вернул поток без вложенных filters — их нужно досоздать через PUT.
+    mock_create_stream.side_effect = [{"id": 201, "filters": []}, {"id": 202}]
+    mock_enable.return_value = {}
+    mock_get_campaign.return_value = {"id": 101, "name": "Test", "state": "active"}
+    mock_list_streams.return_value = [{"id": 201}, {"id": 202}]
+    mock_update_stream.return_value = {}
+
+    response = client.post("/api/v1/campaigns", json={
+        "name": "Летняя акция",
+        "excluded_countries": ["PL", "LT"],
+        "offer_id": 42,
+    }, headers={"Idempotency-Key": "key-filters"})
+
+    assert response.status_code == 201
+    mock_update_stream.assert_awaited_once_with(201, {
+        "filters": [{"name": "country", "mode": "accept", "payload": ["LT", "PL"]}]
+    })
+
+
+@patch("app.routers.campaigns.keitaro.list_stream_filters")
+@patch("app.routers.campaigns.keitaro.list_streams")
+@patch("app.routers.campaigns.keitaro.get_campaign")
+@patch("app.routers.campaigns.keitaro.enable_campaign")
+@patch("app.routers.campaigns.keitaro.create_stream")
+@patch("app.routers.campaigns.keitaro.list_offers")
+@patch("app.routers.campaigns.keitaro.create_campaign")
+@patch("app.routers.campaigns.keitaro.update_stream")
+def test_create_campaign_skips_extra_put_when_filters_applied(
+    mock_update_stream, mock_create_campaign, mock_offers, mock_create_stream,
+    mock_enable, mock_get_campaign, mock_list_streams, mock_filters
+):
+    mock_offers.return_value = [{"id": 42, "name": "Offer"}]
+    mock_filters.return_value = [{"value": "country", "modes": {"accept": "accept", "reject": "reject"}}]
+    mock_create_campaign.return_value = {"id": 102, "alias": "cmp_102", "state": "disabled"}
+    mock_create_stream.side_effect = [
+        {"id": 211, "filters": [{"name": "country", "mode": "accept", "payload": ["PL"]}]},
+        {"id": 212},
+    ]
+    mock_enable.return_value = {}
+    mock_get_campaign.return_value = {"id": 102, "name": "Test", "state": "active"}
+    mock_list_streams.return_value = [{"id": 211}, {"id": 212}]
+
+    response = client.post("/api/v1/campaigns", json={
+        "name": "Зимняя акция",
+        "excluded_countries": ["PL"],
+        "offer_id": 42,
+    }, headers={"Idempotency-Key": "key-filters-ok"})
+
+    assert response.status_code == 201
+    mock_update_stream.assert_not_awaited()

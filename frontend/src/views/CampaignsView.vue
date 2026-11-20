@@ -1,11 +1,7 @@
 <template>
   <section class="page-shell">
     <div class="page-heading">
-      <div>
-        <p class="eyebrow">Управление трафиком</p>
-        <h1>Кампании</h1>
-        <p class="page-description">Создавайте кампании и следите за их состоянием в одном месте.</p>
-      </div>
+      <h1>Кампании</h1>
       <button class="button button-primary" type="button" @click="openCreate">
         <i class="pi pi-plus" aria-hidden="true"></i><span>Создать кампанию</span>
       </button>

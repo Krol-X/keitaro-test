@@ -1,32 +1,53 @@
 <template>
-  <div>
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <span class="text-xs text-gray-500">Выбрано: {{ modelValue.length }} из {{ countries.length }}</span>
-      <div class="flex gap-3 text-sm">
-        <button type="button" class="text-blue-700 hover:underline" @click="selectAll">Выбрать все</button>
-        <button type="button" class="text-blue-700 hover:underline" @click="clear">Снять выбор</button>
-      </div>
-    </div>
+  <div class="country-selector">
     <input
       v-model="search"
       type="search"
-      class="mt-2 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+      class="country-search"
       :placeholder="placeholder"
       aria-label="Поиск страны"
     />
-    <div class="mt-2 max-h-48 overflow-y-auto rounded-md border border-gray-200 p-3">
-      <div class="grid gap-x-4 gap-y-2 sm:grid-cols-2">
-        <label v-for="country in filteredCountries" :key="country.code" class="inline-flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            class="rounded border-gray-300"
-            :checked="modelValue.includes(country.code)"
-            @change="toggle(country.code)"
-          />
-          {{ displayCountryName(country) }} ({{ country.code }})
-        </label>
-      </div>
-      <p v-if="filteredCountries.length === 0" class="text-sm text-gray-500">Страны не найдены.</p>
+
+    <div v-if="selectedCountries.length" class="country-chips" aria-label="Выбранные страны">
+      <button
+        v-for="country in selectedCountries"
+        :key="country.code"
+        type="button"
+        class="country-chip"
+        :aria-label="`Убрать ${displayCountryName(country)} из выбранных`"
+        :title="`Убрать ${displayCountryName(country)}`"
+        @click="toggle(country.code)"
+      >
+        <span class="country-chip-code">{{ country.code }}</span>
+        <span class="country-chip-name">{{ displayCountryName(country) }}</span>
+        <i class="pi pi-times" aria-hidden="true"></i>
+      </button>
+      <button type="button" class="country-clear" @click="clear">Очистить</button>
+    </div>
+
+    <div class="country-meta">
+      <span>Выбрано {{ selectedCountries.length }} из {{ countries.length }}</span>
+      <button type="button" class="country-link" @click="selectVisible">Выбрать все</button>
+    </div>
+
+    <div class="country-list">
+      <label
+        v-for="country in visibleCountries"
+        :key="country.code"
+        class="country-row"
+        :class="{ 'is-selected': isSelected(country.code) }"
+      >
+        <input
+          type="checkbox"
+          class="country-checkbox"
+          :checked="isSelected(country.code)"
+          @change="toggle(country.code)"
+        />
+        <span class="country-row-code">{{ country.code }}</span>
+        <span class="country-row-name">{{ displayCountryName(country) }}</span>
+        <i v-if="isSelected(country.code)" class="pi pi-check country-row-check" aria-hidden="true"></i>
+      </label>
+      <p v-if="visibleCountries.length === 0" class="country-empty">Страны не найдены.</p>
     </div>
   </div>
 </template>
@@ -44,24 +65,43 @@ const emit = defineEmits<{ (event: 'update:modelValue', value: string[]): void }
 const search = ref('')
 const countryNames = new Intl.DisplayNames(['ru'], { type: 'region' })
 const displayCountryName = (country: Country) => countryNames.of(country.code) || country.name
-const filteredCountries = computed(() => {
+const byCode = computed(() => new Map(props.countries.map(country => [country.code, country])))
+const isSelected = (code: string) => props.modelValue.includes(code)
+
+const selectedCountries = computed(() =>
+  props.countries
+    .filter(country => isSelected(country.code))
+    .sort((left, right) => displayCountryName(left).localeCompare(displayCountryName(right), 'ru'))
+)
+
+const visibleCountries = computed(() => {
   const query = search.value.trim().toLocaleLowerCase()
-  return [...props.countries]
+  return props.countries
     .filter(country =>
       !query ||
       displayCountryName(country).toLocaleLowerCase().includes(query) ||
       country.name.toLocaleLowerCase().includes(query) ||
       country.code.toLowerCase().includes(query)
     )
-    .sort((left, right) => displayCountryName(left).localeCompare(displayCountryName(right), 'ru'))
+    // Выбранные страны — всегда сверху, остальные по алфавиту.
+    .sort((left, right) =>
+      Number(isSelected(right.code)) - Number(isSelected(left.code)) ||
+      displayCountryName(left).localeCompare(displayCountryName(right), 'ru')
+    )
 })
 
+const emitSelection = (codes: string[]) => emit('update:modelValue', [...new Set(codes)].sort())
+
 const toggle = (code: string) => {
-  const next = props.modelValue.includes(code)
+  emitSelection(isSelected(code)
     ? props.modelValue.filter(item => item !== code)
-    : [...props.modelValue, code]
-  emit('update:modelValue', [...next].sort())
+    : [...props.modelValue, code])
 }
-const selectAll = () => emit('update:modelValue', props.countries.map(country => country.code).sort())
-const clear = () => emit('update:modelValue', [])
+const clear = () => emitSelection([])
+
+// «Выбрать все» учитывает активный поиск, чтобы не выбрать весь список из-за пустого запроса.
+const selectVisible = () => emitSelection([
+  ...props.modelValue,
+  ...visibleCountries.value.map(country => country.code)
+])
 </script>

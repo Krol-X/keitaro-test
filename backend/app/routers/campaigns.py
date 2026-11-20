@@ -204,6 +204,17 @@ def find_redirect_stream(streams: List[Dict[str, Any]]) -> Optional[Dict[str, An
     return min(candidates, key=lambda stream: stream.get("position") or 0) if candidates else None
 
 
+async def ensure_stream_filters(stream: Optional[Dict[str, Any]], filters: List[Dict[str, Any]]) -> None:
+    """A freshly created flow may come back without nested filters — write them via PUT."""
+    stream_id = (stream or {}).get("id") or (stream or {}).get("stream_id")
+    if not stream_id:
+        return
+    # Если Keitaro не вернул состав фильтров вовсе, доверяем созданию; пустой список — досоздаём.
+    if "filters" not in stream or stream_country_filter(stream) is not None:
+        return
+    await keitaro.update_stream(int(stream_id), {"filters": filters})
+
+
 async def resolve_country_filter_name() -> str:
     stream_filters = response_items(await keitaro.list_stream_filters())
     country_filter = next(
@@ -383,7 +394,12 @@ async def create_campaign(
 
         if request.excluded_countries:
             country_filter_name = await resolve_country_filter_name()
-            await keitaro.create_stream({
+            country_filter = {
+                "name": country_filter_name,
+                "mode": "accept",
+                "payload": request.excluded_countries,
+            }
+            redirect_stream = await keitaro.create_stream({
                 "campaign_id": campaign_id,
                 "name": REDIRECT_STREAM_NAME,
                 "position": 1,
@@ -392,12 +408,9 @@ async def create_campaign(
                 "action_type": "http",
                 "action_payload": REDIRECT_PAYLOAD,
                 "collect_clicks": True,
-                "filters": [{
-                    "name": country_filter_name,
-                    "mode": "accept",
-                    "payload": request.excluded_countries,
-                }],
+                "filters": [country_filter],
             })
+            await ensure_stream_filters(redirect_stream, [country_filter])
 
         await keitaro.create_stream({
             "campaign_id": campaign_id,
