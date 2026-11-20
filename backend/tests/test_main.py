@@ -648,3 +648,97 @@ def test_create_stream_reapplies_offers_when_creation_drops_them(
         {"offer_id": item["offer_id"], "share": item["share"], "state": item["state"]}
         for item in response.json()["offers"]
     ] == [{"offer_id": 8, "share": 100, "state": "active"}]
+
+
+@patch("app.routers.campaigns.keitaro.list_deleted_campaigns", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.create_campaign", new_callable=AsyncMock)
+def test_create_campaign_reports_name_reserved_by_archive(mock_create_campaign, mock_offers, mock_deleted):
+    """DELETE в Keitaro — это архив: имя остаётся занятым, и создание падает с 409."""
+    from fastapi import HTTPException
+
+    mock_offers.return_value = [{"id": 42, "name": "Offer"}]
+    mock_create_campaign.side_effect = HTTPException(
+        status_code=502,
+        detail='Keitaro error: {"name":["Name has already been used in the archive"]}',
+    )
+    mock_deleted.return_value = [
+        {"id": 77, "name": "Летняя акция", "state": "deleted"},
+        {"id": 78, "name": "Другая кампания", "state": "deleted"},
+    ]
+
+    response = client.post("/api/v1/campaigns", json={
+        "name": "Летняя акция",
+        "excluded_countries": ["PL"],
+        "offer_id": 42,
+    }, headers={"Idempotency-Key": "key-archive-conflict"})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "NAME_IN_ARCHIVE"
+    assert detail["name"] == "Летняя акция"
+    # Только совпадающие по имени кампании попадают в подсказку.
+    assert [item["campaign_id"] for item in detail["archived_campaigns"]] == [77]
+    assert "архиве" in detail["message"]
+
+
+@patch("app.routers.campaigns.keitaro.list_deleted_campaigns", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.create_campaign", new_callable=AsyncMock)
+def test_create_campaign_keeps_other_upstream_errors_as_502(mock_create_campaign, mock_offers, mock_deleted):
+    from fastapi import HTTPException
+
+    mock_offers.return_value = [{"id": 42, "name": "Offer"}]
+    mock_create_campaign.side_effect = HTTPException(status_code=502, detail="Keitaro error: boom")
+
+    response = client.post("/api/v1/campaigns", json={
+        "name": "Свежая кампания",
+        "excluded_countries": [],
+        "offer_id": 42,
+    }, headers={"Idempotency-Key": "key-other-error"})
+
+    assert response.status_code == 502
+    mock_deleted.assert_not_awaited()
+
+
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.restore_campaign", new_callable=AsyncMock)
+def test_restore_campaign_returns_streams(mock_restore, mock_get_campaign, mock_list_streams):
+    mock_restore.return_value = {}
+    mock_get_campaign.return_value = {"id": 77, "name": "Летняя акция", "state": "active"}
+    mock_list_streams.return_value = [
+        {"id": 201, "type": "forced", "position": 1, "schema": "redirect"},
+        {"id": 202, "type": "default", "position": 2, "schema": "landings",
+         "offers": [{"offer_id": 8, "share": 100, "state": "active"}]},
+    ]
+
+    response = client.post("/api/v1/campaigns/77/restore")
+
+    assert response.status_code == 200
+    body = response.json()
+    mock_restore.assert_awaited_once_with(77)
+    assert body["campaign_id"] == 77
+    assert body["name"] == "Летняя акция"
+    assert len(body["streams"]) == 2
+
+
+@patch("app.routers.campaigns.keitaro.enable_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.get_campaign", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.restore_campaign", new_callable=AsyncMock)
+def test_restore_campaign_enables_disabled_campaign(mock_restore, mock_get_campaign, mock_list_streams, mock_enable):
+    """Keitaro восстанавливает кампанию выключенной — включаем, иначе трафик не пойдёт."""
+    mock_restore.return_value = {}
+    mock_get_campaign.side_effect = [
+        {"id": 77, "name": "Летняя акция", "state": "disabled"},
+        {"id": 77, "name": "Летняя акция", "state": "active"},
+    ]
+    mock_list_streams.return_value = []
+    mock_enable.return_value = {}
+
+    response = client.post("/api/v1/campaigns/77/restore")
+
+    assert response.status_code == 200
+    mock_enable.assert_awaited_once_with(77)
+    assert response.json()["state"] == "active"

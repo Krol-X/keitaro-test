@@ -28,6 +28,9 @@
   - Оффер (поиск по ID/названию)
   - Домен, Группа, Источник трафика (выбор из справочников или дефолты)
   - Кнопка «Создать» (с поддержкой `Idempotency-Key`)
+  - Конфликт имени с архивом (`409 NAME_IN_ARCHIVE`): список архивных кампаний с кнопкой «Восстановить»
+    (`POST /api/v1/campaigns/{id}/restore`) и вариант «Создать под названием «Имя (2)»».
+    Повторная попытка отправляется с новым `Idempotency-Key`.
 
 ### 3.2. Экран «Карточка кампании»
 - **Заголовок**: ID, Название, Состояние, Ссылка (`campaign_url`).
@@ -53,6 +56,7 @@
 - `GET /api/v1/references`
 - `GET /api/v1/offers`
 - `POST /api/v1/campaigns`
+- `POST /api/v1/campaigns/{id}/restore`
 - `GET /api/v1/campaigns/{id}`
 - `PUT /api/v1/campaigns/{id}/country-filter`
 - `POST /api/v1/campaigns/{id}/streams`

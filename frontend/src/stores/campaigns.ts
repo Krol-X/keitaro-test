@@ -58,6 +58,10 @@ export const useCampaignStore = defineStore('campaigns', {
     async deleteCampaign(id: number) {
       await axios.delete(`${API_BASE}/campaigns/${id}`)
     },
+    async restoreCampaign(id: number) {
+      const res = await axios.post(`${API_BASE}/campaigns/${id}/restore`)
+      return res.data
+    },
     async updateCountryFilter(campaignId: number, excludedCountries: string[]) {
       const res = await axios.put(`${API_BASE}/campaigns/${campaignId}/country-filter`, {
         excluded_countries: excludedCountries
