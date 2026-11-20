@@ -68,6 +68,10 @@ export const useCampaignStore = defineStore('campaigns', {
       const res = await axios.put(`${API_BASE}/campaigns/${campaignId}/streams/${streamId}/offers`, data)
       return res.data
     },
+    async createStream(campaignId: number, data: any) {
+      const res = await axios.post(`${API_BASE}/campaigns/${campaignId}/streams`, data)
+      return res.data
+    },
     async getOperation(id: string) {
       const res = await axios.get(`${API_BASE}/operations/${id}`)
       this.operations[id] = res.data

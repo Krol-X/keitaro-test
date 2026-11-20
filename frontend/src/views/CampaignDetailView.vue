@@ -173,6 +173,79 @@
                 </div>
               </article>
             </div>
+
+            <div v-if="!streamsWithOffers" class="stream-missing">
+              <p class="stream-missing-title">В кампании нет потока с офферами</p>
+              <p class="stream-missing-text">
+                Остался только перехватывающий поток: трафик, не попавший под его условие, никуда не уходит.
+                Создайте поток с офферами — он встанет перед замыкающим.
+              </p>
+            </div>
+
+            <button
+              v-if="!creatingStream"
+              class="button button-secondary button-small stream-create-toggle"
+              type="button"
+              @click="startStreamCreation"
+            >
+              <i class="pi pi-plus" aria-hidden="true"></i>Добавить поток с офферами
+            </button>
+
+            <form v-else class="stream-create" @submit.prevent="submitStream">
+              <div class="stream-create-head">
+                <span class="offer-add-title">Новый поток с офферами</span>
+                <button class="country-clear" type="button" @click="cancelStreamCreation">Отмена</button>
+              </div>
+
+              <div class="stream-create-grid">
+                <label>
+                  Название
+                  <input v-model.trim="newStream.name" maxlength="120" placeholder="Например, Основной поток" />
+                </label>
+                <label>
+                  Тип потока
+                  <select v-model="newStream.type">
+                    <option value="regular">Обычный — перед замыкающим</option>
+                    <option value="default">Замыкающий — последним</option>
+                  </select>
+                </label>
+              </div>
+
+              <div v-if="!offersLoaded" class="stream-create-note">
+                <span>Список офферов ещё не загружен.</span>
+                <button class="button button-secondary button-small" type="button" :disabled="loadingOffers" @click="loadOffers()">
+                  {{ loadingOffers ? 'Загрузка…' : 'Загрузить офферы' }}
+                </button>
+              </div>
+              <p v-else-if="!store.offers.length" class="inline-error">Keitaro не вернул доступные офферы.</p>
+              <p v-else class="stream-create-offers-label">
+                Офферы потока — выберите хотя бы один, доли разделятся поровну:
+              </p>
+
+              <div v-if="store.offers.length" class="stream-create-offers">
+                <label v-for="item in store.offers" :key="item.offer_id" class="stream-create-offer">
+                  <input
+                    type="checkbox"
+                    :value="String(item.offer_id)"
+                    :checked="newStream.offerIds.includes(String(item.offer_id))"
+                    @change="toggleNewStreamOffer(String(item.offer_id))"
+                  />
+                  <span>{{ item.name }} <span class="offer-id">ID: {{ item.offer_id }}</span></span>
+                </label>
+              </div>
+
+              <p v-if="createStreamError" class="inline-error">{{ createStreamError }}</p>
+
+              <div class="stream-create-actions">
+                <button
+                  class="button button-primary button-small"
+                  type="submit"
+                  :disabled="creating || !newStream.offerIds.length"
+                >
+                  {{ creating ? 'Создаём…' : 'Создать поток' }}
+                </button>
+              </div>
+            </form>
           </div>
         </section>
       </div>
@@ -465,6 +538,55 @@ const saveAll = async () => {
     saveError.value = error?.response?.data?.detail || 'Не удалось сохранить изменения офферов.'
   } finally {
     saving.value = false
+  }
+}
+
+const streamsWithOffers = computed(() => (campaign.value?.streams || []).some((stream: any) => holdsOffers(stream)))
+
+const creatingStream = ref(false)
+const creating = ref(false)
+const createStreamError = ref('')
+const newStream = reactive({ name: '', type: 'regular', offerIds: [] as string[] })
+
+const startStreamCreation = () => {
+  createStreamError.value = ''
+  newStream.name = ''
+  newStream.type = 'regular'
+  newStream.offerIds = []
+  creatingStream.value = true
+}
+
+const cancelStreamCreation = () => {
+  creatingStream.value = false
+  createStreamError.value = ''
+}
+
+const toggleNewStreamOffer = (offerId: string) => {
+  const index = newStream.offerIds.indexOf(offerId)
+  if (index >= 0) {
+    newStream.offerIds.splice(index, 1)
+  } else {
+    newStream.offerIds.push(offerId)
+  }
+}
+
+const submitStream = async () => {
+  if (!campaign.value || creating.value || !newStream.offerIds.length) return
+  creating.value = true
+  createStreamError.value = ''
+  try {
+    await store.createStream(campaign.value.campaign_id, {
+      name: newStream.name || null,
+      type: newStream.type,
+      offer_ids: newStream.offerIds.map(Number)
+    })
+    creatingStream.value = false
+    await fetchDetail()
+    await store.fetchCampaigns()
+  } catch (error: any) {
+    createStreamError.value = error?.response?.data?.detail || 'Не удалось создать поток.'
+  } finally {
+    creating.value = false
   }
 }
 

@@ -12,6 +12,7 @@ const store = vi.hoisted(() => ({
   fetchCampaigns: vi.fn(async () => undefined),
   updateCampaign: vi.fn(async () => ({})),
   updateStreamOffers: vi.fn(async () => ({})),
+  createStream: vi.fn(async () => ({})),
   updateCountryFilter: vi.fn(async () => ({}))
 }))
 
@@ -196,9 +197,62 @@ describe('CampaignDetailView layout', () => {
     expect([...select.options].map(option => option.value)).not.toContain('11')
 
     await fireEvent.update(select, '22')
-    await fireEvent.click(await findByRole('button', { name: /Добавить/ }))
+    await fireEvent.click(await findByRole('button', { name: 'Добавить' }))
 
     expect(container.querySelectorAll('.offers-table tbody tr')).toHaveLength(2)
     store.offers = []
+  })
+
+  it('offers a way to create a landings flow when only the redirect flow is left', async () => {
+    const fixture = structuredClone(campaignFixture)
+    // Пользователь остался только с перехватывающим потоком: некуда девать остальной трафик.
+    fixture.streams = [fixture.streams[0]]
+    store.offers = [{ offer_id: 11, name: 'Alpha' }, { offer_id: 22, name: 'Beta' }]
+    store.getCampaignDetail.mockResolvedValue(fixture)
+
+    const { findByText, findByRole, container } = await renderView()
+
+    expect(await findByText('В кампании нет потока с офферами')).toBeTruthy()
+    await fireEvent.click(await findByRole('button', { name: /Добавить поток с офферами/ }))
+
+    await fireEvent.update(container.querySelector('.stream-create-grid input') as HTMLInputElement, 'Основной поток')
+    await fireEvent.click(container.querySelectorAll('.stream-create-offer input')[0])
+    await fireEvent.click(await findByRole('button', { name: 'Создать поток' }))
+
+    await waitFor(() => expect(store.createStream).toHaveBeenCalledTimes(1))
+    expect(store.createStream.mock.calls[0][0]).toBe(50)
+    expect(store.createStream.mock.calls[0][1]).toEqual({
+      name: 'Основной поток',
+      type: 'regular',
+      offer_ids: [11]
+    })
+    store.offers = []
+  })
+
+  it('keeps the create button disabled until at least one offer is picked', async () => {
+    const fixture = structuredClone(campaignFixture)
+    fixture.streams = [fixture.streams[0]]
+    store.offers = [{ offer_id: 11, name: 'Alpha' }]
+    store.getCampaignDetail.mockResolvedValue(fixture)
+
+    const { findByRole, container } = await renderView()
+
+    await fireEvent.click(await findByRole('button', { name: /Добавить поток с офферами/ }))
+    const submit = (await findByRole('button', { name: 'Создать поток' })) as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+
+    await fireEvent.click(container.querySelector('.stream-create-offer input') as HTMLInputElement)
+    expect((await findByRole('button', { name: 'Создать поток' }) as HTMLButtonElement).disabled).toBe(false)
+    store.offers = []
+  })
+
+  it('does not ask for a new flow when a landings flow already exists', async () => {
+    store.offers = []
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+
+    const { findAllByText, queryByText } = await renderView()
+
+    await findAllByText('Потоки и офферы')
+    expect(queryByText('В кампании нет потока с офферами')).toBeNull()
   })
 })
