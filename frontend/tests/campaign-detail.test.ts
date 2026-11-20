@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, fireEvent, cleanup } from '@testing-library/vue'
+import { render, fireEvent, cleanup, waitFor } from '@testing-library/vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import CampaignDetailView from '../src/views/CampaignDetailView.vue'
 
@@ -8,7 +8,7 @@ const store = vi.hoisted(() => ({
   offers: [] as any[],
   getCampaignDetail: vi.fn(),
   fetchReferences: vi.fn(async () => ({ domains: [], groups: [], traffic_sources: [], countries: [{ code: 'BY', name: 'Belarus' }, { code: 'PL', name: 'Poland' }] })),
-  fetchOffers: vi.fn(async () => []),
+  fetchOffers: vi.fn(async () => store.offers),
   fetchCampaigns: vi.fn(async () => undefined),
   updateCampaign: vi.fn(async () => ({})),
   updateStreamOffers: vi.fn(async () => ({})),
@@ -162,5 +162,43 @@ describe('CampaignDetailView layout', () => {
     await fireEvent.click(await findByRole('button', { name: 'Сохранить офферы' }))
 
     expect(await findByText(/no longer returns flow 202/)).toBeTruthy()
+  })
+
+  it('lists offers for adding without requiring a search first', async () => {
+    store.offers = [{ offer_id: 11, name: 'Alpha' }, { offer_id: 22, name: 'Beta' }]
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+
+    const { container, findByRole, findAllByText } = await renderView()
+
+    await findAllByText('Потоки и офферы')
+    const select = container.querySelector('[aria-label="Оффер для добавления"]') as HTMLSelectElement
+    await waitFor(() => expect(select.querySelectorAll('option').length).toBeGreaterThan(2))
+
+    const labels = [...select.options].map(option => option.textContent)
+    expect(labels).toContain('Alpha (ID: 11)')
+    expect(labels).toContain('Beta (ID: 22)')
+    store.offers = []
+  })
+
+  it('filters the offer list locally and adds the chosen offer', async () => {
+    store.offers = [{ offer_id: 11, name: 'Alpha' }, { offer_id: 22, name: 'Beta' }]
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+
+    const { container, findByLabelText, findByRole, findAllByText } = await renderView()
+
+    await findAllByText('Потоки и офферы')
+    await findByLabelText('Поиск офферов для добавления')
+    const search = await findByLabelText('Поиск офферов для добавления')
+    await fireEvent.update(search, 'beta')
+
+    const select = container.querySelector('[aria-label="Оффер для добавления"]') as HTMLSelectElement
+    await waitFor(() => expect([...select.options].map(option => option.value)).toContain('22'))
+    expect([...select.options].map(option => option.value)).not.toContain('11')
+
+    await fireEvent.update(select, '22')
+    await fireEvent.click(await findByRole('button', { name: /Добавить/ }))
+
+    expect(container.querySelectorAll('.offers-table tbody tr')).toHaveLength(2)
+    store.offers = []
   })
 })

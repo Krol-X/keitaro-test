@@ -164,12 +164,40 @@ def configured_id(requested: Optional[int], env_name: str) -> Optional[int]:
         raise HTTPException(status_code=500, detail=f"{env_name} must contain an integer ID") from exc
 
 
+LANDINGS_SCHEMA_HINTS = {"landings", "offers", "offer"}
+REDIRECT_SCHEMA_HINTS = {"redirect"}
+
+
+def normalize_schema(value: Any) -> Optional[str]:
+    """Keitaro returns the flow schema in several shapes: a string, a slug, or an object.
+
+    Live responses may nest it as {"value": "landings"} / {"name": "landings"} and add
+    decorations like "landings_schema". The UI branches on this value, so reduce it to
+    one canonical word here instead of letting every client guess.
+    """
+    if isinstance(value, dict):
+        for key in ("value", "name", "slug", "id", "type"):
+            if value.get(key):
+                return normalize_schema(value[key])
+        return None
+    if not isinstance(value, str):
+        return None
+    slug = re.sub(r"[^a-z]+", " ", value.casefold()).strip()
+    words = set(slug.split())
+    if words & LANDINGS_SCHEMA_HINTS:
+        return "landings"
+    if words & REDIRECT_SCHEMA_HINTS:
+        return "redirect"
+    return slug or None
+
+
 def normalize_streams(response: Any) -> List[Dict[str, Any]]:
     streams = []
     for stream in response_items(response):
         item = dict(stream)
         item.setdefault("stream_id", item.get("id"))
         item.setdefault("offers", [])
+        item["schema"] = normalize_schema(item.get("schema"))
         for offer in item["offers"] or []:
             offer.setdefault("share_locked", False)
         streams.append(item)
