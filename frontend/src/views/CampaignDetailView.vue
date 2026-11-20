@@ -1,214 +1,216 @@
 <template>
-  <div v-if="campaign" class="p-6 bg-white rounded-lg shadow-sm">
-    <!-- Заголовок и настройки (единый стиль) -->
-    <div class="flex justify-between items-start mb-6 border-b pb-4">
+  <div v-if="campaign" class="detail-page">
+    <nav class="breadcrumbs" aria-label="Хлебные крошки">
+      <router-link to="/">Кампании</router-link>
+      <span aria-hidden="true">/</span>
+      <span>{{ campaign.name }}</span>
+    </nav>
+
+    <header class="detail-header">
       <div>
-        <h2 class="text-2xl font-bold text-gray-900">{{ campaign?.name || 'Загрузка...' }} (ID: {{ campaign?.campaign_id }})</h2>
-        <div class="flex gap-2 mt-2">
-          <Tag :value="campaign?.state" :severity="campaign?.state === 'active' ? 'success' : 'danger'" />
-          <a v-if="campaign?.campaign_url" :href="campaign.campaign_url" target="_blank" rel="noopener noreferrer" class="text-blue-600 underline hover:text-blue-800 transition-colors">{{ campaign.campaign_url }}</a>
+        <h1>{{ campaign.name }}</h1>
+        <div class="detail-subline">
+          <span class="detail-id">ID: {{ campaign.campaign_id }}</span>
+          <span class="status-pill" :class="campaign.state === 'active' ? 'status-active' : 'status-disabled'">
+            <span class="status-dot"></span>{{ campaign.state === 'active' ? 'Активна' : 'Выключена' }}
+          </span>
+          <a v-if="campaign.campaign_url" :href="campaign.campaign_url" target="_blank" rel="noopener noreferrer">{{ campaign.campaign_url }}</a>
         </div>
+        <p v-if="saveError" class="notice notice-error mt-3" role="alert">{{ saveError }}</p>
       </div>
-      <Button label="Назад" @click="$router.back()" severity="secondary" outlined />
-    </div>
+      <button class="button button-secondary" type="button" @click="$router.back()">
+        <i class="pi pi-arrow-left" aria-hidden="true"></i>Назад
+      </button>
+    </header>
 
-    <section class="detail-edit-panel">
-      <div class="detail-section-heading">
-        <div><p class="eyebrow">Редактирование</p><h3>Основные настройки</h3></div>
-        <button class="button button-primary" type="button" :disabled="savingCampaign || !campaignChanged" @click="saveCampaign">
-          {{ savingCampaign ? 'Сохранение…' : 'Сохранить настройки' }}
-        </button>
-      </div>
-      <div class="campaign-edit-grid">
-        <label>Название кампании<input v-model.trim="draft.name" maxlength="120" /></label>
-        <label>Состояние<select v-model="draft.state"><option value="active">Активна</option><option value="disabled">Выключена</option></select></label>
-        <label>Домен<select v-model="draft.domainId"><option value="">Не задан</option><option v-for="item in references.domains" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
-        <label>Группа кампаний<select v-model="draft.groupId"><option value="">Не задана</option><option v-for="item in references.groups" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
-        <label>Источник трафика<select v-model="draft.trafficSourceId"><option value="">Не задан</option><option v-for="item in references.traffic_sources" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
-      </div>
-    </section>
-
-    <section class="detail-edit-panel">
-      <div class="detail-section-heading">
-        <div>
-          <p class="eyebrow">Фильтрация трафика</p>
-          <h3>Страны для редиректа на Google</h3>
-        </div>
-        <button class="button button-primary" type="button" :disabled="savingCountries || !countriesChanged" @click="saveCountries">
-          {{ savingCountries ? 'Сохранение…' : 'Сохранить страны' }}
-        </button>
-      </div>
-      <p class="mb-3 mt-0 text-xs text-gray-500">
-        Выбранные страны попадают в отдельный поток с редиректом на Google. Пустой список отключает этот поток.
-      </p>
-      <CountrySelector v-model="draftCountries" :countries="references.countries" />
-      <p v-if="countriesError" class="mb-0 mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{{ countriesError }}</p>
-    </section>
-
-    <!-- Настройки (единый стиль карточек) -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-      <div v-for="item in [
-        { label: 'Домен', val: campaign?.domain_name, id: campaign?.domain_id },
-        { label: 'Группа', val: campaign?.group_name, id: campaign?.group_id },
-        { label: 'Источник', val: campaign?.traffic_source_name, id: campaign?.traffic_source_id }
-      ]" :key="item.label" class="p-3 bg-gray-50 rounded border">
-        <div class="text-xs text-gray-500 uppercase">{{ item.label }}</div>
-        <div class="font-medium">{{ item.val }} (ID: {{ item.id }})</div>
-      </div>
-    </div>
-
-    <!-- Потоки (единый стиль Accordion) -->
-    <div class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-800">Потоки кампании</h3>
-      <Accordion>
-        <AccordionPanel v-for="stream in campaign?.streams || []" :key="stream.stream_id || stream.id" :value="String(stream.stream_id || stream.id)" class="border-none shadow-sm">
-          <AccordionHeader>Поток {{ stream.position }}: {{ stream.name }} ({{ stream.type }})</AccordionHeader>
-          <AccordionContent>
-          <div class="p-4 bg-gray-50 rounded-lg">
-            <!-- Общие данные потока -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              <div>
-                <div class="text-sm text-gray-500 uppercase">Состояние</div>
-                <Tag :value="stream.state" :severity="stream.state === 'active' ? 'success' : 'danger'" />
-              </div>
-              <div>
-                <div class="text-sm text-gray-500 uppercase">Условие</div>
-                <div class="font-medium text-gray-700">{{ describeFilters(stream) }}</div>
-              </div>
+    <div class="detail-layout">
+      <div class="detail-main">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Настройки кампании</h2>
+              <p class="panel-subtitle">Название, состояние и привязки кампании.</p>
             </div>
-
-            <!-- Редирект (для forced потока - Создаватор) -->
-            <div v-if="stream.type === 'forced'" class="mb-4 p-3 bg-white border rounded">
-              <div class="text-sm text-gray-500 uppercase mb-1">Редирект (Google)</div>
-              <div class="font-mono bg-gray-100 p-2 rounded text-sm">{{ stream.action_payload || stream.redirect_url || '—' }}</div>
-            </div>
-
-            <!-- Офферы (для default потока - Редактор) -->
-            <div v-if="stream.type === 'default'" class="mt-4">
-              <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <h4 class="font-semibold text-gray-800">Офферы потока</h4>
-              </div>
-              <div class="mb-4 rounded-lg border border-gray-200 bg-white p-3">
-                <form class="flex flex-wrap gap-2" @submit.prevent="searchOffers">
-                  <input
-                    v-model.trim="offerSearchQuery"
-                    type="search"
-                    class="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm"
-                    placeholder="Найти оффер по названию или ID"
-                    aria-label="Поиск офферов для добавления"
-                  />
-                  <button class="button button-secondary button-small" type="submit" :disabled="searchingOffers || !offerSearchQuery">
-                    {{ searchingOffers ? 'Поиск…' : 'Найти' }}
-                  </button>
-                  <select v-model="selectedOfferId" class="min-w-[180px] flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm" :disabled="addableOffers(stream).length === 0">
-                    <option value="">{{ addableOffers(stream).length ? 'Выберите оффер' : (store.offers.length ? 'Все найденные уже добавлены' : 'Сначала найдите офферы') }}</option>
-                    <option v-for="item in addableOffers(stream)" :key="item.offer_id" :value="String(item.offer_id)">{{ item.name }} (ID: {{ item.offer_id }})</option>
-                  </select>
-                  <button class="button button-primary button-small" type="button" :disabled="!selectedOfferId" @click="addOffer(stream.stream_id || stream.id)">
-                    <i class="pi pi-plus" aria-hidden="true"></i>Добавить
-                  </button>
-                </form>
-                <p class="mb-0 mt-2 text-xs text-gray-500">Новый оффер добавится с долей 0%, чтобы не менять текущее распределение. Настройте проценты перед сохранением.</p>
-                <p v-if="offerSearchError" class="mb-0 mt-2 text-xs text-red-700">{{ offerSearchError }}</p>
-              </div>
-              
-              <!-- Офферы остаются в списке; отключённые помечаются статусом -->
-              <DataTable :value="stream.offers" class="mt-2" :showGridlines="true">
-                <Column field="offer_id" header="ID" class="w-20" />
-                <Column header="Название">
-                  <template #body="{ data }">{{ data.name || `Оффер #${data.offer_id}` }}</template>
-                </Column>
-                <Column header="Доля / блокировка">
-                  <template #body="{ data }">
-                    <div class="flex items-center justify-center gap-2">
-                      <input
-                        v-model.number="data.share"
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="1"
-                        :disabled="data.share_locked"
-                        :aria-label="`Доля оффера ${data.offer_id} в процентах`"
-                        class="w-20 rounded border border-gray-300 px-2 py-1 text-center disabled:bg-gray-100 disabled:text-gray-500"
-                        @input="hasChanges = true"
-                      />
-                      <button
-                        type="button"
-                        class="rounded p-2 hover:bg-gray-100"
-                        :class="data.share_locked ? 'text-amber-700' : 'text-gray-500'"
-                        :aria-label="data.share_locked ? `Разблокировать долю оффера ${data.offer_id}` : `Заблокировать долю оффера ${data.offer_id}`"
-                        :title="data.share_locked ? 'Доля защищена от последующих изменений' : 'Заблокировать долю от последующих изменений'"
-                        @click="toggleOfferLock(stream.stream_id || stream.id, data.offer_id)"
-                      >
-                        <i :class="data.share_locked ? 'pi pi-lock' : 'pi pi-lock-open'" aria-hidden="true"></i>
-                      </button>
-                    </div>
-                  </template>
-                </Column>
-                <Column field="state" header="Состояние">
-                  <template #body="{ data }">
-                    <Tag :value="data.state === 'active' ? 'Активен' : 'Неактивен'" :severity="data.state === 'active' ? 'success' : 'secondary'" />
-                  </template>
-                </Column>
-                <Column header="Действия" class="w-32">
-                  <template #body="{ data }">
-                    <Button
-                      v-if="data.state === 'active'"
-                      label="Отключить"
-                      icon="pi pi-ban"
-                      @click="removeOffer(stream.stream_id || stream.id, data.offer_id)"
-                      severity="danger"
-                      size="small"
-                      outlined
-                    />
-                    <Button
-                      v-else
-                      label="Восстановить"
-                      icon="pi pi-replay"
-                      @click="restoreOffer(stream.stream_id || stream.id, data.offer_id)"
-                      severity="secondary"
-                      size="small"
-                      outlined
-                    />
-                  </template>
-                </Column>
-              </DataTable>
-
-
+            <button class="button button-primary button-small" type="button" :disabled="savingCampaign || !campaignChanged" @click="saveCampaign">
+              {{ savingCampaign ? 'Сохранение…' : 'Сохранить' }}
+            </button>
+          </div>
+          <div class="panel-body">
+            <div class="campaign-edit-grid">
+              <label>Название<input v-model.trim="draft.name" maxlength="120" /></label>
+              <label>Состояние
+                <select v-model="draft.state">
+                  <option value="active">Активна</option>
+                  <option value="disabled">Выключена</option>
+                </select>
+              </label>
+              <label>Домен<select v-model="draft.domainId"><option value="">Не задан</option><option v-for="item in references.domains" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
+              <label>Группа кампаний<select v-model="draft.groupId"><option value="">Не задана</option><option v-for="item in references.groups" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
+              <label>Источник трафика<select v-model="draft.trafficSourceId"><option value="">Не задан</option><option v-for="item in references.traffic_sources" :key="item.id" :value="String(item.id)">{{ item.name }} (ID: {{ item.id }})</option></select></label>
             </div>
           </div>
-          </AccordionContent>
-        </AccordionPanel>
-      </Accordion>
-      
-      <!-- Кнопка сохранения (единая для всей карточки) -->
-      <p v-if="saveError" class="mt-4 rounded bg-red-50 p-3 text-sm text-red-700">{{ saveError }}</p>
-      <div class="mt-6 flex justify-end">
-        <Button :label="saving ? 'Сохранение…' : 'Сохранить изменения'" @click="saveAll" severity="success" :disabled="!hasChanges || saving" />
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Потоки и офферы</h2>
+              <p class="panel-subtitle">Доли и блокировки офферов сохраняются отдельно от настроек кампании.</p>
+            </div>
+            <button class="button button-primary button-small" type="button" :disabled="!hasChanges || saving" @click="saveAll">
+              {{ saving ? 'Сохранение…' : 'Сохранить офферы' }}
+            </button>
+          </div>
+          <div class="panel-body">
+            <div class="stream-list">
+              <article v-for="stream in campaign.streams || []" :key="stream.stream_id || stream.id" class="stream-card">
+                <div class="stream-head">
+                  <span class="stream-position">{{ stream.position }}</span>
+                  <span class="stream-name">{{ stream.name }}</span>
+                  <span class="stream-type" :class="{ 'is-forced': stream.type === 'forced' }">{{ stream.type }}</span>
+                  <div class="stream-head-right">
+                    <span class="status-pill" :class="stream.state === 'active' ? 'status-active' : 'status-disabled'">
+                      <span class="status-dot"></span>{{ stream.state === 'active' ? 'Активен' : 'Выключен' }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="stream.type === 'forced'" class="stream-body">
+                  <div>
+                    <div class="redirect-label">Редирект</div>
+                    <div class="redirect-value mt-1">{{ stream.action_payload || stream.redirect_url || '—' }}</div>
+                  </div>
+                  <div>
+                    <div class="redirect-label">Условие</div>
+                    <p class="mb-0 mt-1 text-sm text-gray-700">{{ describeFilters(stream) }}</p>
+                  </div>
+                </div>
+                <div v-if="stream.type === 'default'" class="stream-body">
+                  <div class="offer-add">
+                    <form class="offer-add-row" @submit.prevent="searchOffers">
+                      <input
+                        v-model.trim="offerSearchQuery"
+                        type="search"
+                        placeholder="Найти оффер по названию или ID"
+                        aria-label="Поиск офферов для добавления"
+                      />
+                      <button class="button button-secondary button-small" type="submit" :disabled="searchingOffers || !offerSearchQuery">
+                        {{ searchingOffers ? 'Поиск…' : 'Найти' }}
+                      </button>
+                      <select v-model="selectedOfferId" :disabled="addableOffers(stream).length === 0" aria-label="Оффер для добавления">
+                        <option value="">{{ addableOffers(stream).length ? 'Выберите оффер' : (store.offers.length ? 'Все найденные уже добавлены' : 'Сначала найдите офферы') }}</option>
+                        <option v-for="item in addableOffers(stream)" :key="item.offer_id" :value="String(item.offer_id)">{{ item.name }} (ID: {{ item.offer_id }})</option>
+                      </select>
+                      <button class="button button-primary button-small" type="button" :disabled="!selectedOfferId" @click="addOffer(stream.stream_id || stream.id)">
+                        <i class="pi pi-plus" aria-hidden="true"></i>Добавить
+                      </button>
+                    </form>
+                    <p class="offer-add-hint">Новый оффер добавляется с долей 0%, чтобы не менять текущее распределение.</p>
+                    <p v-if="offerSearchError" class="inline-error">{{ offerSearchError }}</p>
+                  </div>
+
+                  <div v-if="(stream.offers || []).length" class="table-scroll">
+                    <table class="offers-table">
+                      <thead>
+                        <tr>
+                          <th>Оффер</th>
+                          <th>Доля</th>
+                          <th>Состояние</th>
+                          <th aria-label="Действия"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="offer in stream.offers" :key="offer.offer_id">
+                          <td>
+                            <span class="offer-name">{{ offer.name || `Оффер #${offer.offer_id}` }}</span>
+                            <span class="offer-id">ID: {{ offer.offer_id }}</span>
+                          </td>
+                          <td>
+                            <div class="share-field">
+                              <input
+                                v-model.number="offer.share"
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="1"
+                                :disabled="offer.share_locked"
+                                :aria-label="`Доля оффера ${offer.offer_id} в процентах`"
+                                @input="hasChanges = true"
+                              />
+                              <span class="share-suffix">%</span>
+                              <button
+                                type="button"
+                                class="icon-button"
+                                :class="{ 'is-locked': offer.share_locked }"
+                                :aria-label="offer.share_locked ? `Разблокировать долю оффера ${offer.offer_id}` : `Заблокировать долю оффера ${offer.offer_id}`"
+                                :title="offer.share_locked ? 'Доля защищена от последующих изменений' : 'Заблокировать долю от последующих изменений'"
+                                @click="toggleOfferLock(stream.stream_id || stream.id, offer.offer_id)"
+                              >
+                                <i :class="offer.share_locked ? 'pi pi-lock' : 'pi pi-lock-open'" aria-hidden="true"></i>
+                              </button>
+                            </div>
+                          </td>
+                          <td>
+                            <span class="status-pill" :class="offer.state === 'active' ? 'status-active' : 'status-disabled'">
+                              <span class="status-dot"></span>{{ offer.state === 'active' ? 'Активен' : 'Отключён' }}
+                            </span>
+                          </td>
+                          <td class="cell-actions">
+                            <button v-if="offer.state === 'active'" class="button button-danger-quiet button-small" type="button" @click="removeOffer(stream.stream_id || stream.id, offer.offer_id)">
+                              <i class="pi pi-ban" aria-hidden="true"></i>Отключить
+                            </button>
+                            <button v-else class="button button-secondary button-small" type="button" @click="restoreOffer(stream.stream_id || stream.id, offer.offer_id)">
+                              <i class="pi pi-replay" aria-hidden="true"></i>Восстановить
+                            </button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p v-else class="offers-empty mb-0">В потоке пока нет офферов.</p>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
       </div>
+
+      <aside class="detail-aside">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Фильтрация стран</h2>
+              <p class="panel-subtitle">Страны, которые уходят на Google вместо офферов.</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <CountrySelector v-model="draftCountries" :countries="references.countries" />
+            <p v-if="countriesError" class="notice notice-error mt-3" role="alert">{{ countriesError }}</p>
+          </div>
+          <div class="panel-body">
+            <button class="button button-primary w-full" type="button" :disabled="savingCountries || !countriesChanged" @click="saveCountries">
+              {{ savingCountries ? 'Сохранение…' : 'Сохранить страны' }}
+            </button>
+            <p class="offer-add-hint mt-2">Пустой список отключает поток с редиректом.</p>
+          </div>
+        </section>
+      </aside>
     </div>
   </div>
-  <div v-else class="p-6 text-center text-gray-500">Загрузка кампании...</div>
+  <div v-else class="loading-panel">
+    <span class="loader" aria-hidden="true"></span><span>Загружаем кампанию…</span>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useCampaignStore } from '../stores/campaigns'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
-import Accordion from 'primevue/accordion'
-import AccordionPanel from 'primevue/accordionpanel'
-import AccordionHeader from 'primevue/accordionheader'
-import AccordionContent from 'primevue/accordioncontent'
-import Button from 'primevue/button'
-import Tag from 'primevue/tag'
 import CountrySelector from '../components/CountrySelector.vue'
 
 const route = useRoute()
 const store = useCampaignStore()
 const campaign = ref<any>(null)
-const references = ref<any>({ domains: [], groups: [], traffic_sources: [] })
+const references = ref<any>({ domains: [], groups: [], traffic_sources: [], countries: [] })
 const draft = reactive({ name: '', state: 'active', domainId: '', groupId: '', trafficSourceId: '' })
 const campaignChanged = computed(() => Boolean(campaign.value && (
   draft.name !== campaign.value.name ||
@@ -249,24 +251,12 @@ const fetchDetail = async () => {
     draft.groupId = String(campaign.value.group_id ?? '')
     draft.trafficSourceId = String(campaign.value.traffic_source_id ?? '')
     const loadedCountries = collectSavedCountries(campaign.value)
+    // Не затираем выбор пользователя, если он уже что-то изменил до ответа сервера.
+    const pendingEdit = [...draftCountries.value].sort().join(',') !== [...savedCountries.value].sort().join(',')
     savedCountries.value = loadedCountries
-    if (!countriesChanged.value) draftCountries.value = loadedCountries
+    if (!pendingEdit) draftCountries.value = loadedCountries
   } catch (error: any) {
     saveError.value = error?.response?.data?.detail || 'Не удалось загрузить кампанию.'
-  }
-}
-
-const saveCountries = async () => {
-  if (!campaign.value || savingCountries.value || !countriesChanged.value) return
-  savingCountries.value = true
-  countriesError.value = ''
-  try {
-    await store.updateCountryFilter(campaign.value.campaign_id, draftCountries.value)
-    await fetchDetail()
-  } catch (error: any) {
-    countriesError.value = error?.response?.data?.detail || 'Не удалось сохранить страны фильтрации.'
-  } finally {
-    savingCountries.value = false
   }
 }
 
@@ -288,6 +278,20 @@ const saveCampaign = async () => {
     saveError.value = error?.response?.data?.detail || 'Не удалось сохранить настройки кампании.'
   } finally {
     savingCampaign.value = false
+  }
+}
+
+const saveCountries = async () => {
+  if (!campaign.value || savingCountries.value || !countriesChanged.value) return
+  savingCountries.value = true
+  countriesError.value = ''
+  try {
+    await store.updateCountryFilter(campaign.value.campaign_id, draftCountries.value)
+    await fetchDetail()
+  } catch (error: any) {
+    countriesError.value = error?.response?.data?.detail || 'Не удалось сохранить страны фильтрации.'
+  } finally {
+    savingCountries.value = false
   }
 }
 
