@@ -115,4 +115,52 @@ describe('CampaignDetailView layout', () => {
     await fireEvent.click(checkbox)
     expect((getByRole('button', { name: 'Сохранить страны' }) as HTMLButtonElement).disabled).toBe(false)
   })
+
+  it('saves only the flows whose offers changed', async () => {
+    const fixture = structuredClone(campaignFixture)
+    // Второй поток с офферами, чтобы проверить, что лишний PUT не уходит.
+    fixture.streams.push({
+      stream_id: 203, id: 203, position: 3, name: 'Второй', type: 'regular', schema: 'landings', state: 'active',
+      offers: [{ offer_id: 11, name: 'Offer 11', share: 100, state: 'active', share_locked: false }]
+    })
+    store.getCampaignDetail.mockResolvedValue(fixture)
+
+    const { findAllByLabelText, findByRole } = await renderView()
+
+    const shares = await findAllByLabelText(/в процентах$/)
+    await fireEvent.update(shares[0], '40')
+
+    await fireEvent.click(await findByRole('button', { name: 'Сохранить офферы' }))
+
+    expect(store.updateStreamOffers).toHaveBeenCalledTimes(1)
+    expect(store.updateStreamOffers.mock.calls[0][1]).toBe(202)
+  })
+
+  it('refuses to save a flow where every offer was disabled', async () => {
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+
+    const { findByRole, findAllByText, findByText } = await renderView()
+
+    const disableButtons = await findAllByText('Отключить')
+    await fireEvent.click(disableButtons[0])
+    await fireEvent.click(await findByRole('button', { name: 'Сохранить офферы' }))
+
+    expect(store.updateStreamOffers).not.toHaveBeenCalled()
+    expect(await findByText(/должен остаться хотя бы один активный оффер/)).toBeTruthy()
+  })
+
+  it('shows the backend error when Keitaro drops the flow', async () => {
+    store.getCampaignDetail.mockResolvedValue(structuredClone(campaignFixture))
+    store.updateStreamOffers.mockRejectedValueOnce({
+      response: { data: { detail: 'Keitaro no longer returns flow 202 after the update; open the campaign in Keitaro' } }
+    })
+
+    const { findByRole, findAllByLabelText, findByText } = await renderView()
+
+    const shares = await findAllByLabelText(/в процентах$/)
+    await fireEvent.update(shares[0], '40')
+    await fireEvent.click(await findByRole('button', { name: 'Сохранить офферы' }))
+
+    expect(await findByText(/no longer returns flow 202/)).toBeTruthy()
+  })
 })
