@@ -178,6 +178,26 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .offer-add-hint { margin: 0; color: #93a0b3; font-size: 11.5px; }
 .inline-error { margin: 0; color: #b7474e; font-size: 11.5px; }
 
+/* Stream creation */
+.stream-create-toggle { margin-top: 12px; }
+.stream-missing { display: grid; gap: 4px; margin-top: 12px; padding: 12px 14px; border: 1px dashed #dbe4f0; border-radius: 10px; background: #fbfcfe; }
+.stream-missing-title { margin: 0; color: #42536b; font-size: 12.5px; font-weight: 650; }
+.stream-missing-text { margin: 0; color: #8491a4; font-size: 12px; }
+.stream-create { display: grid; gap: 12px; margin-top: 12px; padding: 14px; border: 1px solid #dbe7fb; border-radius: 12px; background: #f8fbff; }
+.stream-create-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.stream-create-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.stream-create-grid label { display: grid; gap: 7px; color: #5b6a80; font-size: 12px; font-weight: 600; }
+.stream-create-grid input, .stream-create-grid select { width: 100%; min-height: 38px; padding: 0 11px; color: #263750; border: 1px solid #dce4ef; border-radius: 8px; background: #fff; font-size: 12.5px; outline: 0; }
+.stream-create-grid input:focus, .stream-create-grid select:focus { border-color: #73a7f1; box-shadow: 0 0 0 3px #2478ee12; }
+.stream-create-note { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #8491a4; font-size: 12px; }
+.stream-create-offers-label { margin: 0; color: #5b6a80; font-size: 12px; font-weight: 600; }
+.stream-create-offers { display: grid; gap: 2px; overflow-y: auto; max-height: 190px; padding: 4px; border: 1px solid #e4ecf7; border-radius: 9px; background: #fff; }
+.stream-create-offer { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 7px; color: #42536b; font-size: 12.5px; cursor: pointer; }
+.stream-create-offer:hover { background: #f5f9ff; }
+.stream-create-offer input { width: 14px; height: 14px; margin: 0; accent-color: #2478ee; }
+.stream-create-offer .offer-id { margin: 0; display: inline; color: #94a1b4; font-size: 11px; }
+.stream-create-actions { display: flex; justify-content: flex-end; }
+
 @media (max-width: 980px) {
   .detail-layout { grid-template-columns: minmax(0, 1fr); }
   .detail-aside { position: static; }

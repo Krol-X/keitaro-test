@@ -99,6 +99,33 @@ class StreamOffersRequest(BaseModel):
     offers: List[StreamOfferUpdate]
 
 
+class CreateStreamRequest(BaseModel):
+    name: Optional[str] = None
+    type: str = "default"
+    position: Optional[int] = None
+    offer_ids: List[int] = Field(default_factory=list)
+
+    @validator("type")
+    def stream_type_valid(cls, value):
+        if value not in {"regular", "default"}:
+            raise ValueError("A flow with offers must be regular or default; redirect flows live in the country filter")
+        return value
+
+    @validator("name")
+    def stream_name_normalized(cls, value):
+        return value.strip() if value and value.strip() else None
+
+    @validator("offer_ids", always=True)
+    def offer_ids_valid(cls, value):
+        if not value:
+            raise ValueError("A flow must contain at least one offer")
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate offer IDs are not allowed")
+        if any(offer_id <= 0 for offer_id in value):
+            raise ValueError("Offer IDs must be positive")
+        return value
+
+
 class UpdateFilterCountriesRequest(BaseModel):
     excluded_countries: List[str]
 
@@ -263,6 +290,41 @@ def stream_identity_fields(stream: Dict[str, Any]) -> Dict[str, Any]:
             if value is not None or field in {"filters"}:
                 identity[field] = value
     return identity
+
+
+def stream_position_for(streams: List[Dict[str, Any]], stream_type: str) -> int:
+    """Pick the natural slot: a default flow goes last, a regular one right before it."""
+    default_positions = [
+        int(stream.get("position") or 0)
+        for stream in streams
+        if stream.get("type") == "default" and stream.get("position")
+    ]
+    last_position = max((int(stream.get("position") or 0) for stream in streams), default=0)
+    if stream_type == "regular":
+        return min(default_positions) if default_positions else last_position + 1
+    return last_position + 1
+
+
+def split_shares(offer_ids: List[int]) -> Dict[int, int]:
+    """Split 100% evenly, giving the remainder to the lowest IDs so one offer always gets it."""
+    if not offer_ids:
+        return {}
+    base, remainder = divmod(100, len(offer_ids))
+    ordered = sorted(offer_ids)
+    return {
+        offer_id: base + (1 if index < remainder else 0)
+        for index, offer_id in enumerate(ordered)
+    }
+
+
+async def shift_streams_after_insert(streams: List[Dict[str, Any]], position: int, created_id: int) -> None:
+    """Make room for a flow inserted in the middle: everything from that slot moves down one."""
+    for stream in streams:
+        stream_id = int(stream.get("stream_id") or stream.get("id") or 0)
+        if not stream_id or stream_id == created_id:
+            continue
+        if int(stream.get("position") or 0) >= position:
+            await keitaro.update_stream(stream_id, {"position": int(stream.get("position") or 0) + 1})
 
 
 async def resolve_country_filter_name() -> str:
@@ -564,6 +626,80 @@ async def update_campaign(campaign_id: int, request: UpdateCampaignRequest):
 async def delete_campaign(campaign_id: int):
     try:
         await keitaro.delete_campaign(campaign_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/campaigns/{campaign_id}/streams", status_code=201)
+async def create_stream(campaign_id: int, request: CreateStreamRequest):
+    """Create a landings flow with offers inside an existing campaign.
+
+    A campaign that kept only the forced (redirect) flow has nowhere to send the
+    visitors that do not match its filter, and Keitaro refuses to keep a landings
+    flow without offers — so the flow is always created together with its offers.
+    """
+    try:
+        available_offers = response_items(await keitaro.list_offers())
+        known_ids = {int(item["id"]) for item in available_offers if item.get("id") is not None}
+        unknown_ids = sorted(set(request.offer_ids) - known_ids)
+        if unknown_ids:
+            raise HTTPException(status_code=422, detail=f"Offer not found: {', '.join(map(str, unknown_ids))}")
+
+        streams = normalize_streams(await keitaro.list_streams(campaign_id))
+        position = request.position or stream_position_for(streams, request.type)
+        shares = split_shares(request.offer_ids)
+        offers = [
+            {"offer_id": offer_id, "share": shares[offer_id], "state": "active"}
+            for offer_id in sorted(request.offer_ids)
+        ]
+        name = request.name or (
+            "Замыкающий поток" if request.type == "default" else f"Поток с офферами {position}"
+        )
+
+        payload = {
+            "campaign_id": campaign_id,
+            "name": name,
+            "position": position,
+            "type": request.type,
+            "schema": "landings",
+            "action_type": "http",
+            "collect_clicks": True,
+            "offers": offers,
+        }
+        created = await keitaro.create_stream(payload) or {}
+        stream_id = created.get("id") or created.get("stream_id")
+        if not stream_id:
+            raise HTTPException(status_code=502, detail="Keitaro did not return the created flow")
+
+        # Если поток вставили в середину, следующие сдвигаются вниз, чтобы порядок не сломался.
+        if position <= max((int(stream.get("position") or 0) for stream in streams), default=0):
+            await shift_streams_after_insert(streams, position, int(stream_id))
+
+        created_stream = await keitaro.get_stream(int(stream_id))
+        if not created_stream.get("offers"):
+            # Keitaro принимает offers при создании, но на живом API они иногда не сохраняются.
+            await keitaro.update_stream(int(stream_id), {
+                **stream_identity_fields({**payload, **created_stream, "schema": "landings"}),
+                "offers": offers,
+            })
+            created_stream = await keitaro.get_stream(int(stream_id))
+
+        stored_ids = {
+            int(item.get("offer_id"))
+            for item in created_stream.get("offers") or []
+            if item.get("offer_id") is not None
+        }
+        missing_ids = sorted(set(request.offer_ids) - stored_ids)
+        if missing_ids:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Keitaro did not store offers {missing_ids} in flow {stream_id}",
+            )
+
+        return normalize_streams([created_stream])[0]
+
     except HTTPException:
         raise
     except Exception as e:

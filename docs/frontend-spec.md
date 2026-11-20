@@ -43,6 +43,9 @@
     - Режим распределения: `equal` / `explicit`.
     - Кнопка «Сохранить» (отправка `PUT /streams/{id}/offers`).
     - Индикация возможности редактирования (`can_edit_offers`, `edit_disabled_reason`).
+- **Создание потока**: если в кампании нет потоков с офферами, карточка сообщает об этом и предлагает
+  кнопку «Добавить поток с офферами»: название, тип (`regular`/`default`), выбор офферов чекбоксами.
+  `POST /api/v1/campaigns/{id}/streams`, доли делятся поровну.
 - **Операции**: История изменений (UUID, статус, этап, код ошибки).
 
 ## 4. API-интеграция (Бэкенд: FastAPI)
@@ -52,6 +55,7 @@
 - `POST /api/v1/campaigns`
 - `GET /api/v1/campaigns/{id}`
 - `PUT /api/v1/campaigns/{id}/country-filter`
+- `POST /api/v1/campaigns/{id}/streams`
 - `PUT /api/v1/campaigns/{id}/streams/{stream_id}/offers`
 - `GET /api/v1/operations/{id}`
 

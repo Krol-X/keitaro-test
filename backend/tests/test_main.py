@@ -540,3 +540,111 @@ def test_campaign_detail_normalizes_nested_schema(mock_list_streams, mock_get_ca
     forced, default = response.json()["streams"]
     assert forced["schema"] == "redirect"
     assert default["schema"] == "landings"
+
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.create_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+def test_create_stream_adds_landings_flow_with_offers_and_shifts_positions(
+    mock_list_offers, mock_list_streams, mock_update_stream, mock_create_stream, mock_get_stream
+):
+    """Кампания только с перехватывающим потоком: новый поток с офферами встаёт перед замыкающим."""
+    mock_list_offers.return_value = [{"id": 8, "name": "A"}, {"id": 9, "name": "B"}, {"id": 10, "name": "C"}]
+    mock_list_streams.return_value = [
+        {"id": 201, "type": "forced", "position": 1, "schema": "redirect", "offers": []},
+        {"id": 202, "type": "default", "position": 2, "schema": "landings",
+         "offers": [{"offer_id": 3, "share": 100, "state": "active"}]},
+    ]
+    mock_create_stream.return_value = {"id": 203}
+    mock_get_stream.return_value = {
+        "id": 203, "campaign_id": 50, "name": "Поток с офферами 2", "position": 2,
+        "type": "regular", "schema": "landings", "state": "active",
+        "offers": [
+            {"offer_id": 8, "share": 34, "state": "active"},
+            {"offer_id": 9, "share": 33, "state": "active"},
+            {"offer_id": 10, "share": 33, "state": "active"},
+        ],
+    }
+
+    response = client.post("/api/v1/campaigns/50/streams", json={
+        "type": "regular",
+        "offer_ids": [8, 9, 10],
+    })
+
+    assert response.status_code == 201
+    created_payload = mock_create_stream.call_args.args[0]
+    assert created_payload["campaign_id"] == 50
+    assert created_payload["type"] == "regular"
+    assert created_payload["schema"] == "landings"
+    assert created_payload["position"] == 2
+    assert created_payload["offers"] == [
+        {"offer_id": 8, "share": 34, "state": "active"},
+        {"offer_id": 9, "share": 33, "state": "active"},
+        {"offer_id": 10, "share": 33, "state": "active"},
+    ]
+    # Доли в сумме ровно 100.
+    assert sum(offer["share"] for offer in created_payload["offers"]) == 100
+    # Замыкающий поток уезжает с позиции 2 на 3.
+    mock_update_stream.assert_awaited_once_with(202, {"position": 3})
+    assert response.json()["stream_id"] == 203
+    assert response.json()["schema"] == "landings"
+
+
+@patch("app.routers.campaigns.keitaro.create_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+def test_create_stream_rejects_unknown_offer(mock_list_offers, mock_list_streams, mock_create_stream):
+    mock_list_offers.return_value = [{"id": 8, "name": "A"}]
+    mock_list_streams.return_value = [{"id": 201, "type": "forced", "position": 1, "schema": "redirect"}]
+
+    response = client.post("/api/v1/campaigns/50/streams", json={"offer_ids": [8, 99]})
+
+    assert response.status_code == 422
+    assert "99" in response.json()["detail"]
+    mock_create_stream.assert_not_awaited()
+
+
+def test_create_stream_requires_offers_and_landings_type():
+    without_offers = client.post("/api/v1/campaigns/50/streams", json={"type": "regular"})
+    assert without_offers.status_code == 422
+
+    forged_type = client.post("/api/v1/campaigns/50/streams", json={"type": "forced", "offer_ids": [8]})
+    assert forged_type.status_code == 422
+
+    duplicates = client.post("/api/v1/campaigns/50/streams", json={"offer_ids": [8, 8]})
+    assert duplicates.status_code == 422
+
+
+@patch("app.routers.campaigns.keitaro.get_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.update_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.create_stream", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_streams", new_callable=AsyncMock)
+@patch("app.routers.campaigns.keitaro.list_offers", new_callable=AsyncMock)
+def test_create_stream_reapplies_offers_when_creation_drops_them(
+    mock_list_offers, mock_list_streams, mock_create_stream, mock_update_stream, mock_get_stream
+):
+    """POST /streams может вернуть поток без offers — их нужно досоздать через PUT с identity потока."""
+    mock_list_offers.return_value = [{"id": 8, "name": "A"}]
+    mock_list_streams.return_value = [{"id": 201, "type": "forced", "position": 1, "schema": "redirect"}]
+    mock_create_stream.return_value = {"id": 203}
+    empty_stream = {
+        "id": 203, "campaign_id": 50, "name": "Поток с офферами 2", "position": 2,
+        "type": "default", "schema": "landings", "state": "active", "offers": [],
+    }
+    with_offers = {**empty_stream, "offers": [{"offer_id": 8, "share": 100, "state": "active"}]}
+    mock_get_stream.side_effect = [empty_stream, with_offers]
+
+    response = client.post("/api/v1/campaigns/50/streams", json={"offer_ids": [8]})
+
+    assert response.status_code == 201
+    sent_payload = mock_update_stream.call_args.args[1]
+    assert sent_payload["schema"] == "landings"
+    assert sent_payload["type"] == "default"
+    assert sent_payload["offers"] == [{"offer_id": 8, "share": 100, "state": "active"}]
+    assert mock_get_stream.await_count == 2
+    assert [
+        {"offer_id": item["offer_id"], "share": item["share"], "state": item["state"]}
+        for item in response.json()["offers"]
+    ] == [{"offer_id": 8, "share": 100, "state": "active"}]
